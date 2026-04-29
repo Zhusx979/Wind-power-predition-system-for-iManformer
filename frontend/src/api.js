@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 
 export class ApiError extends Error {
   constructor(message, status, payload = null) {
@@ -11,37 +11,52 @@ export class ApiError extends Error {
 
 async function parseResponse(response) {
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  let payload = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      if (!response.ok) throw new ApiError(text || "请求失败", response.status);
+      throw new ApiError("接口返回格式不是 JSON", response.status);
+    }
+  }
   if (!response.ok || payload?.code) {
     throw new ApiError(payload?.message || "请求失败", response.status, payload);
   }
   return payload?.data ?? payload;
 }
 
+async function request(path, options) {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, options);
+    return parseResponse(response);
+  } catch (error) {
+    if (error instanceof ApiError || error.name === "AbortError") throw error;
+    throw new ApiError("后端服务未启动或无法访问，请先运行 scripts/start-backend.ps1", 0);
+  }
+}
+
 export async function apiGet(path, { signal } = {}) {
-  const response = await fetch(`${API_BASE}${path}`, { signal });
-  return parseResponse(response);
+  return request(path, { signal });
 }
 
 export async function apiPost(path, body, { signal } = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
+  return request(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal,
   });
-  return parseResponse(response);
 }
 
 export async function uploadDataset(file, { signal } = {}) {
   const formData = new FormData();
   formData.append("file", file);
-  const response = await fetch(`${API_BASE}/data/upload`, {
+  return request("/data/upload", {
     method: "POST",
     body: formData,
     signal,
   });
-  return parseResponse(response);
 }
 
 export function listSamples(options) {
@@ -54,4 +69,8 @@ export function loadSample(filename, options) {
 
 export function runPredict(payload, options) {
   return apiPost("/predict", payload, options);
+}
+
+export function runAnalysis(payload, options) {
+  return apiPost("/analysis", payload, options);
 }

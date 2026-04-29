@@ -3,10 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, File, UploadFile
 
 from app.core.config import settings
+from app.schemas.analysis import AnalysisRequest
 from app.schemas.common import ApiResponse
 from app.schemas.data import LoadSampleRequest
 from app.schemas.predict import PredictRequest
-from app.services.data_loader import load_dataframe_from_upload, load_sample_dataframe
+from app.services.ai_analysis import analyze_with_domestic_model
+from app.services.data_loader import list_sample_files, load_dataframe_from_upload, load_sample_dataframe
 from app.services.predict_service import run_prediction
 from app.services.storage import dataset_store
 
@@ -24,12 +26,8 @@ async def health() -> ApiResponse:
 
 @router.get("/data/samples", response_model=ApiResponse)
 async def list_samples() -> ApiResponse:
-    files = sorted(
-        p.name
-        for p in settings.data_dir.glob("*")
-        if p.suffix.lower() in {".csv", ".xlsx", ".xls"}
-    )
-    return ok({"samples": files})
+    files = list_sample_files()
+    return ok({"samples": files, "data_dir": str(settings.data_dir)})
 
 
 @router.post("/data/load-sample", response_model=ApiResponse)
@@ -52,3 +50,10 @@ async def predict(request: PredictRequest) -> ApiResponse:
     source = dataset_store.describe(request.file_id)
     result = run_prediction(df, request, source)
     return ok(result, "prediction completed")
+
+
+@router.post("/analysis", response_model=ApiResponse)
+async def analysis(request: AnalysisRequest) -> ApiResponse:
+    df = dataset_store.get(request.file_id)
+    result = analyze_with_domestic_model(df, request)
+    return ok(result, "analysis completed")

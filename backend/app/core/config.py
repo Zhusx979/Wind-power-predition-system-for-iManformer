@@ -10,6 +10,7 @@ class Settings:
         self.max_preview_rows = 8
         self.max_upload_mb = 80
         self.cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+        self.cors_origin_regex = r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$"
 
     @property
     def data_dir(self) -> Path:

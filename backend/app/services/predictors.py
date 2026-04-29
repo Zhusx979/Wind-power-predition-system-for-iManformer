@@ -87,7 +87,7 @@ class TransformerPredictor(BasePredictor):
 
 class AdvancedPredictor(BasePredictor):
     name = "our_model"
-    display_name = "Our Model"
+    display_name = "iManformer"
 
     def predict(self, context: ForecastContext) -> np.ndarray:
         wind_col = _pick_wind_speed_column(context.feature_columns)

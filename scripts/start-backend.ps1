@@ -1,4 +1,12 @@
 $ErrorActionPreference = "Stop"
 Set-Location "$PSScriptRoot\..\backend"
 $env:PYTHONPATH = (Get-Location).Path
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+$condaPython = "$env:USERPROFILE\anaconda3\envs\deep_Learning\python.exe"
+if (Test-Path $condaPython) {
+  $python = $condaPython
+} else {
+  $python = "python"
+}
+
+& $python -m uvicorn app.main:app --host 127.0.0.1 --port 8000

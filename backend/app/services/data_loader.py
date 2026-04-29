@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from fastapi import UploadFile
 
 from app.core.config import settings
+
+if TYPE_CHECKING:
+    from fastapi import UploadFile
 
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".xls"}
 
@@ -47,6 +49,18 @@ async def load_dataframe_from_upload(file: UploadFile) -> tuple[pd.DataFrame, di
     if len(content) > max_bytes:
         raise ValueError(f"文件过大，当前限制为 {settings.max_upload_mb}MB")
     return _read_dataframe(content, filename)
+
+
+def list_sample_files() -> list[str]:
+    data_dir = settings.data_dir
+    if not data_dir.exists() or not data_dir.is_dir():
+        return []
+
+    return sorted(
+        path.name
+        for path in data_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
+    )
 
 
 def load_sample_dataframe(filename: str) -> tuple[pd.DataFrame, dict[str, Any]]:
