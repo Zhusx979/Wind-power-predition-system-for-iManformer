@@ -1,0 +1,73 @@
+{
+  "id": "TC-20260429-PROJECT-SCAFFOLD",
+  "title": "构建风电预测系统前后端可运行骨架",
+  "status": "implemented",
+  "type": "feature",
+  "priority": "high",
+  "created_at": "2026-04-29",
+  "updated_at": "2026-04-29",
+  "owner": "Codex",
+  "summary": "基于 README 和 data 目录 Excel 真实列格式，落地 FastAPI 后端与 React 前端演示系统。",
+  "scope": {
+    "goals": [
+      "支持加载 data 目录内样例 Excel",
+      "支持上传 CSV/XLSX 并自动识别时间列、功率列和特征列",
+      "提供 RNN、LSTM、Transformer、Our Model 四通道预测与指标对比",
+      "提供可视化前端页面完成端到端演示"
+    ],
+    "files_changed": [
+      "backend/app/main.py",
+      "backend/app/api/v1/routes.py",
+      "backend/app/services/data_loader.py",
+      "backend/app/services/preprocessor.py",
+      "backend/app/services/predictors.py",
+      "backend/app/services/predict_service.py",
+      "backend/app/services/metrics.py",
+      "frontend/src/App.jsx",
+      "frontend/src/api.js",
+      "frontend/src/styles.css",
+      "frontend/vite.config.js",
+      "scripts/start-backend.ps1",
+      "scripts/start-frontend.ps1",
+      "README.md"
+    ]
+  },
+  "context": {
+    "project_stage": "scaffold",
+    "data_format": {
+      "time_column": "Time(year-month-day h:m:s)",
+      "target_column": "Power (MW)",
+      "feature_examples": [
+        "Wind speed - at the height of wheel hub(m/s)",
+        "Air temperature  (°C)",
+        "Atmosphere (hpa)",
+        "Relative humidity (%)"
+      ]
+    },
+    "demo_model_strategy": {
+      "baselines": [
+        "rnn",
+        "lstm",
+        "transformer"
+      ],
+      "our_model_demo": "feature-informed wind-power curve blended with seasonal baseline"
+    }
+  },
+  "validation": {
+    "checks": [
+      "python -m compileall backend/app",
+      "Prediction service smoke test on data/Wind farm site 1 with 24-step horizon",
+      "Direct backend core test invocation",
+      "npm run build in frontend"
+    ],
+    "tests": [
+      "backend core test passed",
+      "vite production build passed"
+    ]
+  },
+  "handoff": {
+    "current_state": "前后端骨架已具备端到端演示能力，模型仍为公开演示代理逻辑。",
+    "recommended_next_prompt": "请接入真实模型权重或将 Our Model 替换为 PatchTST/Informer 推理类。",
+    "blockers": []
+  }
+}

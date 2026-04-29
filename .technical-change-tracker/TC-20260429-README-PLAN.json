@@ -1,0 +1,70 @@
+{
+  "id": "TC-20260429-README-PLAN",
+  "title": "将 README 重构为风电预测系统中文版计划书",
+  "status": "implemented",
+  "type": "documentation",
+  "priority": "high",
+  "created_at": "2026-04-29",
+  "updated_at": "2026-04-29",
+  "owner": "Codex",
+  "summary": "围绕风电功率预测演示系统，重写 README 为适合 Codex 持续开发和部署的大型项目计划书，并补充 README 变更说明。",
+  "scope": {
+    "goals": [
+      "让 README 直接服务于风电预测系统开发",
+      "明确演示版模型策略与替换边界",
+      "为后续 Codex 多轮协作提供统一任务基线"
+    ],
+    "files_changed": [
+      "README.md",
+      "CHANGELOG_README.md",
+      ".technical-change-tracker/TC-20260429-README-PLAN.json"
+    ]
+  },
+  "context": {
+    "project_stage": "planning",
+    "constraints": [
+      "私有模型不可直接提供",
+      "当前仓库前后端目录存在但尚未实现核心代码",
+      "需要一个可展示效果的代理版增强模型"
+    ],
+    "demo_model_strategy": {
+      "baselines": [
+        "rnn",
+        "lstm",
+        "transformer"
+      ],
+      "our_model_demo": "patchtst_or_informer"
+    }
+  },
+  "revisions": [
+    {
+      "version": 1,
+      "date": "2026-04-29",
+      "status": "implemented",
+      "changes": [
+        "重写 README 结构，聚焦风电预测系统目标、架构、接口和部署",
+        "新增 Codex 协作开发计划与任务拆分建议",
+        "更新 README 变更说明并登记结构化追踪文件"
+      ],
+      "validation": {
+        "checks": [
+          "README 与仓库当前空骨架状态一致",
+          "文档已明确代理模型与真实模型替换关系"
+        ],
+        "tests": [
+          "documentation review only"
+        ]
+      },
+      "next_steps": [
+        "搭建 backend FastAPI 骨架",
+        "定义上传与预测 API",
+        "初始化 frontend 展示页面"
+      ]
+    }
+  ],
+  "handoff": {
+    "current_state": "README 规划完成，尚未开始核心代码实现。",
+    "recommended_next_prompt": "请根据 README 的目录规划，先实现 backend FastAPI 骨架，并创建 health、upload、predict 三个基础接口。",
+    "blockers": []
+  }
+}
