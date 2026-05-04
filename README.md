@@ -523,90 +523,23 @@ export default {
 }
 ```
 
-## 🧩 使用示例
-
-### 1. 加载示例数据并进行预测
-
-```python
-import requests
-
-BASE_URL = "http://localhost:8000/api/v1"
-
-# 列表示例数据
-samples = requests.get(f"{BASE_URL}/data/samples").json()
-print(samples["data"]["samples"])
-
-# 加载示例
-response = requests.post(
-    f"{BASE_URL}/data/load-sample",
-    json={"filename": "sample1.csv"}
-)
-file_id = response.json()["data"]["file_id"]
-
-# 运行预测
-predict_response = requests.post(
-    f"{BASE_URL}/predict",
-    json={
-        "file_id": file_id,
-        "model": "lstm",
-        "params": {
-            "lookback": 48,
-            "horizon": 24
-        }
-    }
-)
-print(predict_response.json())
-```
-
-### 2. 上传自定义数据
-
-```python
-with open("my_data.csv", "rb") as f:
-    files = {"file": f}
-    response = requests.post(
-        f"{BASE_URL}/data/upload",
-        files=files
-    )
-    file_id = response.json()["data"]["file_id"]
-    print(f"上传成功，文件ID: {file_id}")
-```
-
 ## ❓ 常见问题
 
-### Q1: 前端连接后端失败？
-**A:** 检查后端是否运行，确认CORS配置中包含前端域名：
-```python
-# backend/app/core/config.py
-self.cors_origins = ["http://localhost:5173", "http://your-domain.com"]
-```
-
-### Q2: 上传文件超过大小限制？
+### Q1: 上传文件超过大小限制？
 **A:** 修改 `config.py` 中的 `max_upload_mb` 值：
 ```python
 self.max_upload_mb = 100  # 改为100MB
 ```
 
-### Q3: 如何添加新的预测模型？
+### Q2: 如何添加新的预测模型？
 **A:** 
 1. 在 `backend/app/services/predictors.py` 中实现预测器
 2. 在 `backend/app/services/predict_service.py` 中注册模型
 3. 在前端UI中添加模型选项
 
-### Q4: 如何自定义数据格式？
+### Q3: 如何自定义数据格式？
 **A:** 修改 `backend/app/schemas/data.py` 和 `backend/app/services/data_loader.py`
 
-## 🛠️ 开发建议
-
-- ✅ 提交代码前运行 `black` 和 `flake8` 进行代码检查
-- ✅ 为新功能添加单元测试
-- ✅ 更新API文档（自动生成，访问 `/docs`）
-- ✅ 生产环境关闭 `--reload` 和 debug模式
-
-## 🆘 获取帮助
-
-- 📚 完整API文档：http://localhost:8000/docs
-- 📝 提交Issue：[GitHub Issues](https://github.com/yourusername/wind-power-forecasting/issues)
-- 💬 讨论功能：[GitHub Discussions](https://github.com/yourusername/wind-power-forecasting/discussions)
 
 ## 📄 许可证
 
@@ -625,14 +558,11 @@ self.max_upload_mb = 100  # 改为100MB
 ## 🙏 致谢
 
 - 感谢所有贡献者和用户的支持
-- 项目灵感来自电气大创项目
 
 ---
 
 <div align="center">
 
 **⭐ 如果这个项目对你有帮助，请给个Star！**
-
-Made with ❤️ by [Your Team Name]
 
 </div>
