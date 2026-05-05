@@ -35,6 +35,7 @@ const SAMPLE_QUESTIONS = [
   "iManformer 相比其他模型优势在哪里？",
   "如何降低高风速区间的预测误差？",
 ];
+const EMPTY_ANALYSIS_ANSWER = "当前分析已返回，但暂无可展示的问答内容。";
 
 function formatNumber(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
@@ -153,9 +154,23 @@ function normalizeAnalysisResult(result, question) {
     model: result.model || "deepseek-v4-flash",
     qa: {
       question: qa.question || question || "",
-      answer: qa.answer || "当前分析已返回，但暂无可展示的问答内容。",
+      answer: qa.answer || EMPTY_ANALYSIS_ANSWER,
       references: Array.isArray(qa.references) ? qa.references : [],
     },
+  };
+}
+
+function createAnalysisTurn(question, id) {
+  return {
+    id,
+    question,
+    answer: "",
+    references: [],
+    provider: "DeepSeek Chat Completions",
+    mode: "pending",
+    model: "deepseek-v4-flash",
+    report: "",
+    status: "loading",
   };
 }
 
@@ -236,6 +251,7 @@ function App() {
   const [dataset, setDataset] = useState(null);
   const [predictResult, setPredictResult] = useState(null);
   const [analysisResult, setAnalysisResult] = useState(null);
+  const [analysisHistory, setAnalysisHistory] = useState([]);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -304,6 +320,9 @@ function App() {
       setDataset(data);
       setPredictResult(null);
       setAnalysisResult(null);
+      setAnalysisHistory([]);
+      setAnalysisQuestion("");
+      setSelectedQuestion(SAMPLE_QUESTIONS[0]);
       setActivePage("load");
       setMessage(`已加载样例：${data.source_name}`);
     });
@@ -317,6 +336,9 @@ function App() {
       setDataset(data);
       setPredictResult(null);
       setAnalysisResult(null);
+      setAnalysisHistory([]);
+      setAnalysisQuestion("");
+      setSelectedQuestion(SAMPLE_QUESTIONS[0]);
       setActivePage("load");
       setMessage(`已上传：${data.source_name}`);
     });
@@ -342,6 +364,9 @@ function App() {
       );
       setPredictResult(data);
       setAnalysisResult(null);
+      setAnalysisHistory([]);
+      setAnalysisQuestion("");
+      setSelectedQuestion(SAMPLE_QUESTIONS[0]);
       setActivePage("forecast");
       setMessage(data.summary?.message || "预测完成");
     });
@@ -352,29 +377,76 @@ function App() {
       setMessage("请先完成预测，再进入分析");
       return;
     }
+    const nextQuestion = String(question || "").trim();
+    if (!nextQuestion) {
+      setMessage("请输入问题后再发送");
+      return;
+    }
+
     analysisControllerRef.current?.abort();
-    analysisControllerRef.current = new AbortController();
+    const controller = new AbortController();
+    analysisControllerRef.current = controller;
+    const turnId = `analysis-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setAnalysisLoading(true);
     setMessage("");
+    setAnalysisQuestion("");
+    setSelectedQuestion("");
+    setAnalysisHistory((current) => [...current, createAnalysisTurn(nextQuestion, turnId)]);
     runAnalysis(
       {
         file_id: dataset.file_id,
         prediction_result: predictResult,
         provider: "deepseek",
-        question,
+        question: nextQuestion,
       },
-      { signal: analysisControllerRef.current.signal },
+      { signal: controller.signal },
     )
       .then((data) => {
-        const nextResult = normalizeAnalysisResult(data, question);
+        const nextResult = normalizeAnalysisResult(data, nextQuestion);
         setAnalysisResult(nextResult);
+        setAnalysisHistory((current) =>
+          current.map((item) => (item.id === turnId
+            ? {
+              ...item,
+              question: nextResult.qa?.question || nextQuestion,
+              answer: nextResult.qa?.answer || EMPTY_ANALYSIS_ANSWER,
+              references: nextResult.qa?.references || [],
+              provider: nextResult.provider || item.provider,
+              mode: nextResult.mode || "offline",
+              model: nextResult.model || item.model,
+              report: nextResult.report || "",
+              status: "done",
+            }
+            : item)),
+        );
         setActivePage("analysis");
         setMessage(nextResult?.qa?.answer ? "分析结果已返回" : "分析完成");
       })
       .catch((error) => {
-        if (error.name !== "AbortError") setMessage(error.message || "分析失败");
+        if (error.name === "AbortError") {
+          setAnalysisHistory((current) => current.filter((item) => item.id !== turnId));
+          return;
+        }
+        const errorMessage = error.message || "分析失败";
+        setAnalysisHistory((current) =>
+          current.map((item) => (item.id === turnId
+            ? {
+              ...item,
+              answer: errorMessage,
+              references: [],
+              mode: "error",
+              status: "error",
+            }
+            : item)),
+        );
+        setMessage(errorMessage);
       })
-      .finally(() => setAnalysisLoading(false));
+      .finally(() => {
+        if (analysisControllerRef.current === controller) {
+          setAnalysisLoading(false);
+          analysisControllerRef.current = null;
+        }
+      });
   };
 
   const datasetSummary = dataset || {};
@@ -803,7 +875,11 @@ function App() {
                   <textarea
                     rows="4"
                     value={analysisQuestion}
-                    onChange={(e) => setAnalysisQuestion(e.target.value)}
+                    onChange={(e) => {
+                      const { value } = e.target;
+                      setAnalysisQuestion(value);
+                      setSelectedQuestion(SAMPLE_QUESTIONS.includes(value) ? value : "");
+                    }}
                     placeholder="请输入你想了解的问题，例如：某段误差为什么升高？"
                   />
                   <div className="question-actions">
@@ -828,58 +904,65 @@ function App() {
                     </button>
                   ))}
                 </div>
-                <div className="analysis-response">
-                  <div className="analysis-response-head">
-                    <span>回答</span>
-                    <strong>{analysisLoading ? "生成中" : analysisResult?.provider || "等待返回"}</strong>
+              </div>
+              <div className="panel analysis-panel analysis-conversation-panel">
+                <div className="panel-head">
+                  <h3>会话记录</h3>
+                  <div className="panel-head-tools">
+                    <span>{analysisHistory.length ? `共 ${analysisHistory.length} 轮问答` : "尚未开始对话"}</span>
                   </div>
-                  {analysisLoading ? (
-                    <div className="answer-loading" aria-label="正在生成回答">
-                      <span />
-                      <span />
-                      <span />
-                    </div>
-                  ) : null}
-                  {analysisResult ? (
-                    <div className="analysis-response-body">
-                      <div className="analysis-response-meta">
-                        <div>
-                          <span>来源</span>
-                          <strong>{analysisResult.provider || "Deepseek"}</strong>
-                        </div>
-                        <div>
-                          <span>模式</span>
-                          <strong>{analysisResult.mode === "online" ? "在线" : "离线"}</strong>
-                        </div>
-                        <div>
-                          <span>参考</span>
-                          <strong>{analysisResult.qa?.references?.length || 0} 项</strong>
-                        </div>
-                      </div>
-                      <div className="analysis-qa">
-                        <div>
-                          <span>问题</span>
-                          <p>{analysisResult.qa?.question || "未输入具体问题"}</p>
-                        </div>
-                        <div>
-                          <span>回答</span>
-                          <p>{analysisResult.qa?.answer || "当前分析已返回，但暂无可展示的问答内容。"}</p>
-                        </div>
-                      </div>
-                      {analysisResult.qa?.references?.length ? (
-                        <div className="analysis-references">
-                          {analysisResult.qa.references.map((item) => (
-                            <span key={item}>{item}</span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : !analysisLoading ? (
-                    <div className="empty-state compact-empty">
-                      发送问题后，这里会直接显示 AI 回答、来源和引用依据。
-                    </div>
-                  ) : null}
                 </div>
+                {analysisHistory.length ? (
+                  <div className="analysis-thread">
+                    {analysisHistory.map((item, index) => (
+                      <article
+                        key={item.id}
+                        className={item.status === "error" ? "analysis-turn error" : "analysis-turn"}
+                      >
+                        <div className="analysis-turn-index">{String(index + 1).padStart(2, "0")}</div>
+                        <div className="analysis-turn-card user-turn">
+                          <div className="analysis-turn-head">
+                            <span>问题</span>
+                            <strong>用户输入</strong>
+                          </div>
+                          <p>{item.question || "未输入具体问题"}</p>
+                        </div>
+                        <div className="analysis-turn-card assistant-turn">
+                          <div className="analysis-turn-head">
+                            <span>回答</span>
+                            <strong>
+                              {item.status === "loading" ? "生成中" : item.provider || "DeepSeek"}
+                            </strong>
+                          </div>
+                          {item.status === "loading" ? (
+                            <div className="answer-loading" aria-label="正在生成回答">
+                              <span />
+                              <span />
+                              <span />
+                            </div>
+                          ) : (
+                            <p>{item.answer || EMPTY_ANALYSIS_ANSWER}</p>
+                          )}
+                          <div className="analysis-turn-meta">
+                            <span>{item.mode === "online" ? "在线" : item.mode === "error" ? "失败" : "离线"}</span>
+                            <strong>{item.model || "deepseek-v4-flash"}</strong>
+                          </div>
+                          {item.references?.length ? (
+                            <div className="analysis-references">
+                              {item.references.map((reference) => (
+                                <span key={`${item.id}-${reference}`}>{reference}</span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state compact-empty">
+                    发送问题后，这里会按时间顺序保留每一轮提问与回答。
+                  </div>
+                )}
               </div>
             </div>
             <div className="analysis-insight-column">
