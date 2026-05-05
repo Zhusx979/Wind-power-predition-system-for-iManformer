@@ -3,62 +3,226 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Legend,
   Line,
   LineChart,
-  PolarAngleAxis,
-  PolarGrid,
-  Radar,
-  RadarChart,
   ReferenceArea,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import { listSamples, loadSample, runAnalysis, runPredict, uploadDataset } from "./api";
+import { runAnalysis, runPredict, uploadDataset, listSamples, loadSample } from "./api";
 
 const MODEL_META = {
-  rnn: { label: "RNN", color: "#f59e0b", muted: "#5d4320" },
-  lstm: { label: "LSTM", color: "#2dd4bf", muted: "#1d5756" },
-  transformer: { label: "Transformer", color: "#38bdf8", muted: "#1d4b69" },
-  our_model: { label: "iManformer", color: "#f43f5e", muted: "#6d2634" },
+  rnn: { label: "RNN", color: "#7ca4b1" },
+  lstm: { label: "LSTM", color: "#3b83a2" },
+  transformer: { label: "Transformer", color: "#20c8f5" },
+  our_model: { label: "iManformer", color: "#7fffd4" },
 };
 
-const DEFAULT_MODELS = Object.keys(MODEL_META);
+const NAV_ITEMS = [
+  { key: "load", label: "数据加载" },
+  { key: "forecast", label: "预测结果" },
+  { key: "analysis", label: "DeepSeek分析" },
+];
 
-function formatNumber(value, digits = 3) {
+const DEFAULT_MODELS = Object.keys(MODEL_META);
+const SAMPLE_QUESTIONS = [
+  "为什么 08:00-10:00 误差会上升？",
+  "未来 24 小时哪些气象因素影响最大？",
+  "iManformer 相比其他模型优势在哪里？",
+  "如何降低高风速区间的预测误差？",
+];
+
+function formatNumber(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return Number(value).toFixed(digits);
 }
 
-function scoreLower(value, minValue) {
-  if (!Number.isFinite(Number(value)) || !Number.isFinite(Number(minValue)) || minValue <= 0) return 0;
-  return Math.max(8, Math.min(100, (minValue / Number(value)) * 100));
+function hasValue(value) {
+  return value !== null && value !== undefined && value !== "";
 }
 
-function scoreR2(value) {
-  if (!Number.isFinite(Number(value))) return 0;
-  return Math.max(0, Math.min(100, ((Number(value) + 1) / 2) * 100));
+function formatCount(value) {
+  if (!hasValue(value)) return "--";
+  const number = Number(value);
+  if (Number.isFinite(number)) return number.toLocaleString();
+  return String(value);
 }
 
-function MetricCard({ title, value, sub, accent = false }) {
+function inferColumnCount(summary) {
+  if (hasValue(summary?.column_count)) return summary.column_count;
+  if (Array.isArray(summary?.columns)) return summary.columns.length;
+  if (Array.isArray(summary?.preview_columns)) return summary.preview_columns.length;
+  if (summary?.preview?.[0]) return Object.keys(summary.preview[0]).length;
+  return null;
+}
+
+function parseTimeValue(value) {
+  if (!hasValue(value)) return null;
+  const text = String(value).trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}\s/.test(text) ? text.replace(" ", "T") : text;
+  const time = new Date(normalized).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const render = (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, ""));
+  if (seconds >= 3600) return `${render(seconds / 3600)} 小时`;
+  if (seconds >= 60) return `${render(seconds / 60)} 分钟`;
+  return `${render(seconds)} 秒`;
+}
+
+function inferSampleInterval(summary, timeColumn) {
+  if (hasValue(summary?.sample_interval)) return summary.sample_interval;
+  if (!timeColumn || !summary?.preview?.length) return null;
+  const times = summary.preview
+    .map((row) => parseTimeValue(row?.[timeColumn]))
+    .filter((time) => time !== null)
+    .sort((a, b) => a - b);
+  const deltas = [];
+  for (let index = 1; index < times.length; index += 1) {
+    const deltaSeconds = (times[index] - times[index - 1]) / 1000;
+    if (deltaSeconds > 0) deltas.push(deltaSeconds);
+  }
+  if (!deltas.length) return null;
+  deltas.sort((a, b) => a - b);
+  const middle = Math.floor(deltas.length / 2);
+  const median = deltas.length % 2 ? deltas[middle] : (deltas[middle - 1] + deltas[middle]) / 2;
+  return formatDuration(median);
+}
+
+function formatDate(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatLabel(key) {
+  const normalized = String(key ?? "").trim().replace(/\s+/g, " ");
+  const map = {
+    "Time(year-month-day h:m:s)": "时间",
+    "Power (MW)": "功率(MW)",
+    "Wind speed at height of 10 meters (m/s)": "10m风速",
+    "Wind direction at height of 10 meters (˚)": "10m风向",
+    "Wind speed at height of 30 meters (m/s)": "30m风速",
+    "Wind direction at height of 30 meters (˚)": "30m风向",
+    "Wind speed at height of 50 meters (m/s)": "50m风速",
+    "Wind direction at height of 50 meters (˚)": "50m风向",
+    "Wind speed - at the height of wheel hub(m/s)": "轮毂风速",
+    "Wind speed - at the height of wheel hub (m/s)": "轮毂风速",
+    "Wind speed - at the height of wheel hub (˚)": "轮毂风向",
+    "Air temperature (°C)": "温度(°C)",
+    "Atmosphere (hpa)": "气压(hPa)",
+    "Atmosphere (hPa)": "气压(hPa)",
+    "Relative humidity (%)": "湿度(%)",
+  };
+  return map[normalized] || key;
+}
+
+function normalizeForecastData(result) {
+  if (!result?.chart_data?.length) return [];
+  return result.chart_data.map((row) => ({
+    time: row.time,
+    actual: row.actual,
+    rnn: row.rnn,
+    lstm: row.lstm,
+    transformer: row.transformer,
+    our_model: row.our_model,
+    our_model_error: row.our_model_error,
+  }));
+}
+
+function normalizeAnalysisResult(result, question) {
+  if (!result) return null;
+  const qa = result.qa || {};
+  return {
+    ...result,
+    provider: result.provider || "DeepSeek Chat Completions",
+    mode: result.mode || "offline",
+    model: result.model || "deepseek-v4-flash",
+    qa: {
+      question: qa.question || question || "",
+      answer: qa.answer || "当前分析已返回，但暂无可展示的问答内容。",
+      references: Array.isArray(qa.references) ? qa.references : [],
+    },
+  };
+}
+
+function StatCard({ title, value, detail, tone = "default" }) {
   return (
-    <section className={accent ? "metric-card accent" : "metric-card"}>
+    <article className={`stat-card ${tone}`}>
       <span>{title}</span>
       <strong>{value}</strong>
-      <small>{sub}</small>
-    </section>
+      <small>{detail}</small>
+    </article>
+  );
+}
+
+function SectionTitle({ kicker, title, note }) {
+  return (
+    <div className="section-title">
+      <span>{kicker}</span>
+      <div>
+        <h2>{title}</h2>
+        {note ? <p>{note}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function DataPreviewTable({ rows, scrollable = false }) {
+  const columns = useMemo(() => {
+    if (!rows?.length) return [];
+    return Object.keys(rows[0]);
+  }, [rows]);
+
+  if (!rows?.length) {
+    return <div className="empty-state">加载样例或上传文件后，这里会显示前几行数据。</div>;
+  }
+
+  return (
+    <div className={scrollable ? "table-shell scrollable" : "table-shell"}>
+      <table>
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column}>{formatLabel(column)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={index}>
+              {columns.map((column) => (
+                <td key={column}>{String(row[column] ?? "--")}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function ReportMarkdown({ content }) {
-  if (!content) return <p className="report-empty">生成报告后，Deepseek 会在这里给出数据和结果分析。</p>;
+  if (!content) return <div className="empty-state">完成预测后再生成分析报告，这里会显示结构化诊断结论。</div>;
+  const lines = String(content).split("\n");
   return (
     <div className="report-body">
-      {content.split("\n").map((line, index) => {
-        if (line.startsWith("## ")) return <h3 key={index}>{line.replace("## ", "")}</h3>;
-        if (line.startsWith("- ")) return <p key={index} className="report-bullet">{line.replace("- ", "")}</p>;
+      {lines.map((line, index) => {
+        if (line.startsWith("## ")) return <h3 key={index}>{line.slice(3)}</h3>;
+        if (line.startsWith("- ")) return <p key={index} className="report-item">{line.slice(2)}</p>;
         return line.trim() ? <p key={index}>{line}</p> : <br key={index} />;
       })}
     </div>
@@ -66,137 +230,104 @@ function ReportMarkdown({ content }) {
 }
 
 function App() {
+  const [activePage, setActivePage] = useState("start");
   const [samples, setSamples] = useState([]);
   const [selectedSample, setSelectedSample] = useState("");
-  const [sampleStatus, setSampleStatus] = useState("正在加载样例数据...");
   const [dataset, setDataset] = useState(null);
-  const [result, setResult] = useState(null);
-  const [analysis, setAnalysis] = useState(null);
-  const [activeView, setActiveView] = useState("forecast");
+  const [predictResult, setPredictResult] = useState(null);
+  const [analysisResult, setAnalysisResult] = useState(null);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [horizon, setHorizon] = useState(24);
   const [windowSize, setWindowSize] = useState(96);
-  const [loading, setLoading] = useState(false);
-  const [loadingProgress, setLoadingProgress] = useState(null);
-  const [loadingTask, setLoadingTask] = useState("");
-  const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [message, setMessage] = useState("");
-  const [curveWindow, setCurveWindow] = useState({ start: 0, end: null });
+  const [compareEnabled, setCompareEnabled] = useState(false);
+  const [analysisQuestion, setAnalysisQuestion] = useState("");
+  const [selectedQuestion, setSelectedQuestion] = useState(SAMPLE_QUESTIONS[0]);
+  const [dataStatus, setDataStatus] = useState("正在加载样例数据...");
+  const [chartWindow, setChartWindow] = useState({ start: 0, end: null });
   const [zoomDraft, setZoomDraft] = useState(null);
+  const [chartView, setChartView] = useState("normal");
   const controllerRef = useRef(null);
   const analysisControllerRef = useRef(null);
-  const progressTimerRef = useRef(null);
-  const progressResetTimerRef = useRef(null);
-  const isDraggingCurveRef = useRef(false);
-  const loadingRunRef = useRef(0);
+  const dragRef = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
-    setSampleStatus("正在加载样例数据...");
     listSamples({ signal: controller.signal })
       .then((data) => {
         const nextSamples = data.samples || [];
         setSamples(nextSamples);
-        setSelectedSample((current) => (nextSamples.includes(current) ? current : nextSamples[0] || ""));
-        setSampleStatus(nextSamples.length ? "" : `未在 ${data.data_dir || "data"} 目录找到 CSV / XLSX / XLS 样例文件`);
+        setSelectedSample(nextSamples[0] || "");
+        setDataStatus(nextSamples.length ? "" : "数据目录中没有可用样例文件");
       })
       .catch((error) => {
-        if (error.name !== "AbortError") {
-          setSamples([]);
-          setSelectedSample("");
-          setSampleStatus(`样例列表加载失败：${error.message}`);
-        }
+        if (error.name !== "AbortError") setDataStatus(error.message || "样例加载失败");
       });
     return () => controller.abort();
   }, []);
 
   useEffect(() => {
-    setCurveWindow({ start: 0, end: null });
+    setChartWindow({ start: 0, end: null });
     setZoomDraft(null);
-  }, [result]);
+  }, [predictResult]);
 
   useEffect(() => {
-    return () => {
-      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-      if (progressResetTimerRef.current) clearTimeout(progressResetTimerRef.current);
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setChartView("normal");
+        setZoomDraft(null);
+      }
     };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const startLoadingProgress = (task) => {
-    if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-    if (progressResetTimerRef.current) clearTimeout(progressResetTimerRef.current);
-    setLoadingTask(task);
-    setLoadingProgress(8);
-    progressTimerRef.current = setInterval(() => {
-      setLoadingProgress((current) => {
-        if (current === null) return current;
-        if (current < 48) return Math.min(48, current + 10);
-        if (current < 78) return Math.min(78, current + 5);
-        return Math.min(94, current + 2);
-      });
-    }, 260);
-  };
-
-  const finishLoadingProgress = () => {
-    if (progressTimerRef.current) {
-      clearInterval(progressTimerRef.current);
-      progressTimerRef.current = null;
-    }
-    setLoadingProgress(100);
-    progressResetTimerRef.current = setTimeout(() => {
-      setLoadingProgress(null);
-      setLoadingTask("");
-    }, 520);
-  };
-
-  const runSafely = async (job, task = "处理中") => {
+  const withLoading = async (task, onDone) => {
     controllerRef.current?.abort();
     controllerRef.current = new AbortController();
-    const runId = loadingRunRef.current + 1;
-    loadingRunRef.current = runId;
     setLoading(true);
-    startLoadingProgress(task);
-    setMessage("");
+    setMessage(task);
     try {
-      await job(controllerRef.current.signal);
+      await onDone(controllerRef.current.signal);
     } catch (error) {
-      if (runId === loadingRunRef.current && error.name !== "AbortError") setMessage(error.message || "操作失败");
+      if (error.name !== "AbortError") setMessage(error.message || "操作失败");
     } finally {
-      if (runId === loadingRunRef.current) {
-        setLoading(false);
-        finishLoadingProgress();
-      }
+      setLoading(false);
     }
   };
 
   const handleLoadSample = () => {
     if (!selectedSample) return;
-    runSafely(async (signal) => {
+    withLoading("正在加载样例数据...", async (signal) => {
       const data = await loadSample(selectedSample, { signal });
       setDataset(data);
-      setResult(null);
-      setAnalysis(null);
+      setPredictResult(null);
+      setAnalysisResult(null);
+      setActivePage("load");
       setMessage(`已加载样例：${data.source_name}`);
-    }, "加载样例数据");
+    });
   };
 
   const handleUpload = (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    runSafely(async (signal) => {
+    withLoading("正在上传并解析数据...", async (signal) => {
       const data = await uploadDataset(file, { signal });
       setDataset(data);
-      setResult(null);
-      setAnalysis(null);
+      setPredictResult(null);
+      setAnalysisResult(null);
+      setActivePage("load");
       setMessage(`已上传：${data.source_name}`);
-    }, "上传并解析数据");
+    });
   };
 
   const handlePredict = () => {
     if (!dataset?.file_id) {
-      setMessage("请先加载样例数据或上传数据文件");
+      setMessage("请先加载样例数据或上传文件");
       return;
     }
-    runSafely(async (signal) => {
+    withLoading("正在执行多模型预测...", async (signal) => {
       const data = await runPredict(
         {
           file_id: dataset.file_id,
@@ -209,442 +340,571 @@ function App() {
         },
         { signal },
       );
-      setResult(data);
-      setAnalysis(null);
+      setPredictResult(data);
+      setAnalysisResult(null);
+      setActivePage("forecast");
       setMessage(data.summary?.message || "预测完成");
-    }, "多模型预测");
+    });
   };
 
-  const handleAnalysis = async () => {
-    if (!dataset?.file_id || !result) {
-      setMessage("请先完成预测，再进入 Deepseek 分析");
+  const handleAnalysis = (question = analysisQuestion) => {
+    if (!dataset?.file_id || !predictResult) {
+      setMessage("请先完成预测，再进入分析");
       return;
     }
     analysisControllerRef.current?.abort();
     analysisControllerRef.current = new AbortController();
     setAnalysisLoading(true);
     setMessage("");
-    try {
-      const data = await runAnalysis(
-        {
-          file_id: dataset.file_id,
-          prediction_result: result,
-          provider: "deepseek",
-        },
-        { signal: analysisControllerRef.current.signal },
-      );
-      setAnalysis(data);
-      setActiveView("analysis");
-    } catch (error) {
-      if (error.name !== "AbortError") setMessage(error.message || "分析失败");
-    } finally {
-      setAnalysisLoading(false);
-    }
+    runAnalysis(
+      {
+        file_id: dataset.file_id,
+        prediction_result: predictResult,
+        provider: "deepseek",
+        question,
+      },
+      { signal: analysisControllerRef.current.signal },
+    )
+      .then((data) => {
+        const nextResult = normalizeAnalysisResult(data, question);
+        setAnalysisResult(nextResult);
+        setActivePage("analysis");
+        setMessage(nextResult?.qa?.answer ? "分析结果已返回" : "分析完成");
+      })
+      .catch((error) => {
+        if (error.name !== "AbortError") setMessage(error.message || "分析失败");
+      })
+      .finally(() => setAnalysisLoading(false));
   };
 
-  const bestModel = result?.summary?.best_model;
-  const ranking = result?.ranking || [];
-  const metrics = result?.metrics || {};
+  const datasetSummary = dataset || {};
+  const inference = dataset?.inferred || {};
+  const featureColumns = inference.feature_columns || [];
+  const columnCount = inferColumnCount(datasetSummary);
+  const sampleInterval = inferSampleInterval(datasetSummary, inference.time_column);
+  const timeRange = datasetSummary.time_range
+    ? `${formatDate(datasetSummary.time_range.start)} ~ ${formatDate(datasetSummary.time_range.end)}`
+    : "--";
+  const chartData = normalizeForecastData(predictResult);
+  const visibleChart = useMemo(() => {
+    const end = chartWindow.end ?? chartData.length;
+    return chartData.slice(chartWindow.start, end);
+  }, [chartData, chartWindow]);
+  const chartPanelClass = [
+    "panel",
+    "chart-panel",
+    chartView === "wide" ? "wide-chart" : "",
+    chartView === "fullscreen" ? "fullscreen-chart" : "",
+  ].filter(Boolean).join(" ");
+  const chartHeight = chartView === "fullscreen" ? "100%" : chartView === "wide" ? 500 : 360;
+  const visiblePointCount = visibleChart.length;
+  const totalPointCount = chartData.length;
   const metricRows = DEFAULT_MODELS.map((model) => ({
     model: MODEL_META[model].label,
-    MAE: metrics[model]?.MAE,
-    RMSE: metrics[model]?.RMSE,
-    MAPE: metrics[model]?.MAPE,
-    SMAPE: metrics[model]?.SMAPE,
+    MAE: predictResult?.metrics?.[model]?.MAE,
+    RMSE: predictResult?.metrics?.[model]?.RMSE,
+    MAPE: predictResult?.metrics?.[model]?.MAPE,
+    R2: predictResult?.metrics?.[model]?.R2,
   }));
+  const ranking = predictResult?.ranking || [];
+  const bestModel = predictResult?.summary?.best_model || ranking[0]?.model;
+  const ourMetrics = predictResult?.metrics?.our_model || {};
+  const firstError = visibleChart[0]?.our_model_error ?? 0;
+  const visibleRange = visibleChart.length ? `${visibleChart[0]?.time} - ${visibleChart[visibleChart.length - 1]?.time}` : "--";
+  const currentStatus = loading
+    ? "任务处理中"
+    : analysisLoading
+      ? "DeepSeek分析中"
+      : analysisResult?.qa?.answer
+        ? "分析结果已返回"
+      : dataset?.file_id
+        ? "系统运行正常"
+        : "等待数据导入";
 
-  const radarRows = useMemo(() => {
-    if (!result) return [];
-    const metricNames = ["MAE", "RMSE", "MAPE", "SMAPE"];
-    const mins = Object.fromEntries(
-      metricNames.map((name) => [
-        name,
-        Math.min(...DEFAULT_MODELS.map((model) => Number(metrics[model]?.[name])).filter(Number.isFinite)),
-      ]),
-    );
-    return [
-      ...metricNames.map((name) => ({
-        metric: name,
-        ...Object.fromEntries(DEFAULT_MODELS.map((model) => [model, scoreLower(metrics[model]?.[name], mins[name])])),
-      })),
-      {
-        metric: "R2",
-        ...Object.fromEntries(DEFAULT_MODELS.map((model) => [model, scoreR2(metrics[model]?.R2)])),
-      },
-    ];
-  }, [result, metrics]);
-
-  const curveData = result?.chart_data || [];
-  const visibleCurveData = useMemo(() => {
-    const end = curveWindow.end ?? curveData.length;
-    return curveData.slice(curveWindow.start, end);
-  }, [curveData, curveWindow]);
-  const isCurveZoomed = curveWindow.start > 0 || curveWindow.end !== null;
-  const zoomStartLabel = zoomDraft ? visibleCurveData[Math.min(zoomDraft.start, zoomDraft.end)]?.time : null;
-  const zoomEndLabel = zoomDraft ? visibleCurveData[Math.max(zoomDraft.start, zoomDraft.end)]?.time : null;
-
-  const getActiveCurveIndex = (state) => {
-    const rawIndex = state?.activeTooltipIndex ?? state?.activeIndex;
-    const index = Number(rawIndex);
-    if (Number.isInteger(index) && index >= 0 && index < visibleCurveData.length) return index;
-
-    const labelIndex = visibleCurveData.findIndex((item) => item.time === state?.activeLabel);
-    return labelIndex >= 0 ? labelIndex : null;
-  };
-
-  const getPointerButton = (event, state) => {
-    return event?.button ?? event?.nativeEvent?.button ?? state?.event?.button ?? state?.event?.nativeEvent?.button;
-  };
-
-  const handleCurveMouseDown = (state, event) => {
-    const button = getPointerButton(event, state);
-    if (button != null && button !== 0) return;
-    const index = getActiveCurveIndex(state);
-    if (index !== null) {
-      isDraggingCurveRef.current = true;
+  const handleChartMouseDown = (state, event) => {
+    const button = event?.button ?? state?.event?.button ?? 0;
+    if (button !== 0) return;
+    const index = state?.activeTooltipIndex ?? state?.activeIndex;
+    if (Number.isInteger(index)) {
+      dragRef.current = true;
       setZoomDraft({ start: index, end: index });
     }
   };
 
-  const handleCurveMouseMove = (state) => {
-    if (!isDraggingCurveRef.current) return;
-    const index = getActiveCurveIndex(state);
-    if (zoomDraft && index !== null) setZoomDraft((draft) => ({ ...draft, end: index }));
+  const handleChartMouseMove = (state) => {
+    if (!dragRef.current || !zoomDraft) return;
+    const index = state?.activeTooltipIndex ?? state?.activeIndex;
+    if (Number.isInteger(index)) {
+      setZoomDraft((current) => ({ ...current, end: index }));
+    }
   };
 
-  const handleCurveMouseUp = () => {
-    isDraggingCurveRef.current = false;
+  const handleChartMouseUp = () => {
+    dragRef.current = false;
     if (!zoomDraft) return;
     const start = Math.min(zoomDraft.start, zoomDraft.end);
     const end = Math.max(zoomDraft.start, zoomDraft.end);
     if (end - start >= 2) {
-      setCurveWindow({
-        start: curveWindow.start + start,
-        end: curveWindow.start + end + 1,
+      setChartWindow({
+        start: chartWindow.start + start,
+        end: chartWindow.start + end + 1,
       });
     }
     setZoomDraft(null);
   };
 
-  const handleCurveDoubleClick = (state, event) => {
-    const button = getPointerButton(event, state);
-    if (button != null && button !== 0) return;
-    const index = getActiveCurveIndex(state);
-    if (index === null || curveData.length <= 3) return;
-
-    const absoluteIndex = curveWindow.start + index;
-    const radius = Math.max(4, Math.min(36, Math.floor(visibleCurveData.length * 0.12)));
-    const start = Math.max(0, absoluteIndex - radius);
-    const end = Math.min(curveData.length, absoluteIndex + radius + 1);
-
-    if (end - start >= 3 && (start !== curveWindow.start || end !== (curveWindow.end ?? curveData.length))) {
-      setCurveWindow({ start, end });
-      setZoomDraft(null);
-    }
-  };
-
-  const resetCurveZoom = () => {
-    setCurveWindow({ start: 0, end: null });
+  const resetChart = () => {
+    setChartWindow({ start: 0, end: null });
     setZoomDraft(null);
-    isDraggingCurveRef.current = false;
+    setChartView("normal");
   };
-
-  const improvement = result
-    ? ranking.find((item) => item.model !== "our_model")?.rmse - metrics.our_model?.RMSE
-    : null;
 
   return (
     <main className="app-shell">
-      <section className="hero-panel">
-        <div className="hero-copy-block">
-          <p className="eyebrow">Wind Power Forecast Lab</p>
-          <h1>风电功率预测与智能分析系统</h1>
-          <p className="hero-copy">
-            读取风电场时序数据，完成 RNN、LSTM、Transformer 与 iManformer 的统一对比预测，并用 Deepseek 生成面向工程汇报的结果分析。
-          </p>
-          <div className="view-switch" aria-label="界面切换">
-            <button className={activeView === "forecast" ? "switch-active" : ""} onClick={() => setActiveView("forecast")}>
-              预测驾驶舱
+      <header className="topbar">
+        <button className="brand" onClick={() => setActivePage("start")} type="button">
+          <span className="brand-mark" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
+          <span>风力发电功率预测系统</span>
+        </button>
+        <nav className="module-nav" aria-label="模块导航">
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.key}
+              className={activePage === item.key ? "nav-chip active" : "nav-chip"}
+              onClick={() => setActivePage(item.key)}
+              type="button"
+            >
+              {item.label}
             </button>
-            <button className={activeView === "analysis" ? "switch-active" : ""} onClick={() => setActiveView("analysis")}>
-              Deepseek 分析
+          ))}
+        </nav>
+        <div className="run-status">
+          <span />
+          <strong>{currentStatus}</strong>
+          <em>{datasetSummary.created_at ? formatDate(datasetSummary.created_at) : "未加载数据"}</em>
+        </div>
+      </header>
+
+      {activePage === "start" && (
+        <section className="start-screen">
+          <div className="start-hero">
+            <p className="hero-kicker">Wind Power Forecasting & Intelligent Analysis</p>
+            <h1>风力发电功率预测系统</h1>
+            <p className="hero-copy">基于多模型预测与 DeepSeek 分析的风电功率辅助决策平台。</p>
+          </div>
+          <div className="start-grid">
+            <button className="start-card" onClick={() => setActivePage("load")} type="button">
+              <span className="start-icon doc-icon" aria-hidden="true" />
+              <span className="start-card-title">数据加载</span>
+              <p>导入样例数据或上传本地风电数据，完成字段识别与数据预览。</p>
+            </button>
+            <button className="start-card" onClick={() => setActivePage("forecast")} type="button">
+              <span className="start-icon chart-icon" aria-hidden="true" />
+              <span className="start-card-title">预测结果</span>
+              <p>查看模型预测曲线、指标对比与误差分析。</p>
+            </button>
+            <button className="start-card" onClick={() => setActivePage("analysis")} type="button">
+              <span className="start-icon ai-icon" aria-hidden="true" />
+              <span className="start-card-title">DeepSeek分析</span>
+              <p>基于预测结果生成诊断报告、关键时刻说明和问答。</p>
             </button>
           </div>
-        </div>
-        <div className="hero-stat">
-          <span>System State</span>
-          <strong>{dataset ? "READY" : "WAITING"}</strong>
-          <small>{dataset?.rows ? `${dataset.rows.toLocaleString()} 行数据` : "请选择样例或上传文件"}</small>
-        </div>
-      </section>
+          <div className="process-rail" aria-label="流程">
+            <span>1</span>
+            <strong>数据加载</strong>
+            <i />
+            <span>2</span>
+            <strong>预测结果</strong>
+            <i />
+            <span>3</span>
+            <strong>DeepSeek分析</strong>
+          </div>
+        </section>
+      )}
 
-      {activeView === "forecast" && (
-        <>
-          <section className="control-grid">
-            <div className="panel data-panel">
+      {activePage === "load" && (
+        <section className="dashboard-page">
+          <SectionTitle kicker="01" title="数据加载" note="导入样例或上传文件后，页面会自动识别时间列、目标列和气象特征列。" />
+          <div className="load-stack">
+            <div className="panel import-panel">
               <div className="panel-head">
-                <span>01</span>
-                <h2>数据接入</h2>
+                <h3>选择样例数据</h3>
               </div>
-              <div className="form-row">
-                <label>样例数据</label>
-                <select
-                  value={selectedSample}
-                  onChange={(event) => setSelectedSample(event.target.value)}
-                  disabled={loading || samples.length === 0}
-                >
-                  {samples.length === 0 ? (
-                    <option value="">暂无可用样例</option>
-                  ) : (
-                    samples.map((sample) => (
-                      <option value={sample} key={sample}>
-                        {sample}
-                      </option>
-                    ))
-                  )}
+              <div className="control-row">
+                <select value={selectedSample} onChange={(e) => setSelectedSample(e.target.value)} disabled={loading || !samples.length}>
+                  {samples.length ? samples.map((item) => <option key={item} value={item}>{item}</option>) : <option value="">暂无样例</option>}
                 </select>
-                <button onClick={handleLoadSample} disabled={loading || !selectedSample}>
-                  加载样例
-                </button>
+                <button onClick={handleLoadSample} disabled={!selectedSample || loading}>加载样例</button>
               </div>
-              {sampleStatus && <p className="sample-status">{sampleStatus}</p>}
-              <div className="upload-box">
-                <input type="file" accept=".csv,.xlsx,.xls" onChange={handleUpload} disabled={loading} />
-                <span>也可以上传 CSV / XLSX，首行需为列名</span>
+              <div className="upload-zone">
+                <input accept=".csv,.xlsx,.xls" onChange={handleUpload} type="file" disabled={loading} />
+                <p>支持 CSV / XLSX / XLS，首行需为列名。</p>
               </div>
-              {loadingProgress !== null && ["加载样例数据", "上传并解析数据"].includes(loadingTask) && (
-                <div className="progress-block" role="status" aria-live="polite">
-                  <div className="progress-row">
-                    <span>{loadingTask}</span>
-                    <strong>{Math.round(loadingProgress)}%</strong>
-                  </div>
-                  <div
-                    className="progress-track"
-                    role="progressbar"
-                    aria-label={loadingTask}
-                    aria-valuemin="0"
-                    aria-valuemax="100"
-                    aria-valuenow={Math.round(loadingProgress)}
-                  >
-                    <span style={{ width: `${loadingProgress}%` }} />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="panel parameter-panel">
-              <div className="panel-head">
-                <span>02</span>
-                <h2>预测参数</h2>
-              </div>
-              <div className="param-grid">
+              {dataStatus ? <p className="helper-line">{dataStatus}</p> : null}
+              {message ? <p className="message-line">{message}</p> : null}
+              <div className="predict-inline">
                 <label>
                   预测步长
-                  <input type="number" min="1" max="336" value={horizon} onChange={(event) => setHorizon(event.target.value)} />
+                  <input type="number" min="1" max="336" value={horizon} onChange={(e) => setHorizon(e.target.value)} />
                 </label>
                 <label>
                   窗口长度
-                  <input type="number" min="8" max="2000" value={windowSize} onChange={(event) => setWindowSize(event.target.value)} />
+                  <input type="number" min="8" max="2000" value={windowSize} onChange={(e) => setWindowSize(e.target.value)} />
                 </label>
+                <button onClick={handlePredict} disabled={!dataset || loading} type="button">
+                  {loading ? "处理中..." : "开始预测"}
+                </button>
               </div>
-              <button className="primary-action" onClick={handlePredict} disabled={loading || !dataset}>
-                {loading && loadingTask === "多模型预测" ? "处理中..." : "开始多模型预测"}
-              </button>
-              <button className="secondary-action" onClick={handleAnalysis} disabled={analysisLoading || !result}>
-                {analysisLoading ? "分析生成中..." : "生成 Deepseek 分析报告"}
-              </button>
-              {message && <p className="message">{message}</p>}
             </div>
-
-            <div className="panel schema-panel">
-              <div className="panel-head">
-                <span>03</span>
-                <h2>列名识别</h2>
+            <div className="load-row">
+              <div className="load-main-column">
+                <div className="panel preview-panel">
+                  <div className="panel-head">
+                    <h3>数据预览</h3>
+                    <span className="panel-head-tools">
+                      <span>{datasetSummary.preview?.length ? `前 ${datasetSummary.preview.length} 行` : "暂无预览"}</span>
+                    </span>
+                  </div>
+                  <DataPreviewTable rows={datasetSummary.preview || []} scrollable />
+                </div>
+                <div className="panel overview-panel">
+                  <div className="panel-head">
+                    <h3>数据概况</h3>
+                  </div>
+                  <div className="summary-grid">
+                    <StatCard title="数据集" value={datasetSummary.source_name || "--"} detail="当前加载的数据文件" />
+                    <StatCard title="记录数" value={formatCount(datasetSummary.rows)} detail="有效样本数量" />
+                    <StatCard title="字段数" value={formatCount(columnCount)} detail="原始列总数" />
+                    <StatCard title="采样间隔" value={sampleInterval || "--"} detail="由时间列自动推断" />
+                  </div>
+                </div>
               </div>
-              <dl>
-                <div>
-                  <dt>时间列</dt>
-                  <dd>{dataset?.inferred?.time_column || "--"}</dd>
+              <div className="panel fields-panel">
+                <div className="panel-head">
+                  <h3>字段识别结果</h3>
                 </div>
-                <div>
-                  <dt>目标列</dt>
-                  <dd>{dataset?.inferred?.target_column || "--"}</dd>
+                <div className="meta-list">
+                  <div><span>时间列</span><strong title={inference.time_column || ""}>{formatLabel(inference.time_column) || "--"}</strong></div>
+                  <div><span>目标列</span><strong title={inference.target_column || ""}>{formatLabel(inference.target_column) || "--"}</strong></div>
                 </div>
-                <div>
-                  <dt>特征数</dt>
-                  <dd>{dataset?.inferred?.feature_columns?.length ?? "--"}</dd>
+                <div className="feature-stack">
+                  <div className="feature-stack-head">
+                    <span className="feature-stack-title">特征列</span>
+                    <strong>{formatCount(featureColumns.length)}</strong>
+                  </div>
+                  {featureColumns.length ? (
+                    <div className="feature-list">
+                      {featureColumns.map((item) => <span key={item}>{formatLabel(item)}</span>)}
+                    </div>
+                  ) : (
+                    <div className="feature-empty">暂无特征列</div>
+                  )}
                 </div>
-              </dl>
+              </div>
             </div>
-          </section>
-
-          {result && (
-            <>
-              <section className="metric-grid">
-                <MetricCard title="最优模型" value={MODEL_META[bestModel]?.label || "--"} sub="按 RMSE / MAE 综合排序" accent />
-                <MetricCard title="iManformer RMSE" value={formatNumber(metrics.our_model?.RMSE)} sub="越低越好" />
-                <MetricCard title="iManformer MAE" value={formatNumber(metrics.our_model?.MAE)} sub="平均绝对误差" />
-                <MetricCard title="领先幅度" value={formatNumber(improvement, 3)} sub="相对第二名 RMSE 差值" />
-              </section>
-
-              <section className="visual-grid">
-                <div className="panel chart-panel wide">
-                  <div className="panel-head">
-                    <div>
-                      <span>Curve</span>
-                      <h2>真实值与预测值</h2>
-                    </div>
-                    <div className="curve-tools">
-                      <small>{isCurveZoomed ? "已放大局部区间" : "按住鼠标框选可放大"}</small>
-                      <button onClick={resetCurveZoom} disabled={!isCurveZoomed}>
-                        重置视图
-                      </button>
-                    </div>
-                  </div>
-                  <ResponsiveContainer width="100%" height={380}>
-                    <LineChart
-                      data={visibleCurveData}
-                      onMouseDown={handleCurveMouseDown}
-                      onMouseMove={handleCurveMouseMove}
-                      onMouseUp={handleCurveMouseUp}
-                      onMouseLeave={() => {
-                        isDraggingCurveRef.current = false;
-                        setZoomDraft(null);
-                      }}
-                      onDoubleClick={handleCurveDoubleClick}
-                    >
-                      <CartesianGrid stroke="rgba(148, 163, 184, 0.16)" strokeDasharray="4 8" />
-                      <XAxis dataKey="time" tick={{ fill: "#8fa3b8", fontSize: 11 }} minTickGap={34} />
-                      <YAxis tick={{ fill: "#8fa3b8", fontSize: 11 }} />
-                      <Tooltip contentStyle={{ background: "#101922", border: "1px solid #263746", borderRadius: 16 }} />
-                      <Legend />
-                      <Line type="monotone" dataKey="actual" name="真实功率" stroke="#f8fafc" strokeWidth={3.4} dot={false} />
-                      {DEFAULT_MODELS.map((model) => (
-                        <Line
-                          key={model}
-                          type="monotone"
-                          dataKey={model}
-                          name={MODEL_META[model].label}
-                          stroke={MODEL_META[model].color}
-                          strokeWidth={model === "our_model" ? 3.2 : 2}
-                          strokeOpacity={model === "our_model" ? 1 : 0.72}
-                          dot={false}
-                        />
-                      ))}
-                      {zoomStartLabel && zoomEndLabel && zoomStartLabel !== zoomEndLabel && (
-                        <ReferenceArea x1={zoomStartLabel} x2={zoomEndLabel} strokeOpacity={0.24} fill="#2dd4bf" fillOpacity={0.16} />
-                      )}
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="panel ranking-panel side-ranking-panel">
-                  <div className="panel-head">
-                    <span>Ranking</span>
-                    <h2>模型综合表现</h2>
-                  </div>
-                  <div className="ranking-list">
-                    {ranking.map((item, index) => (
-                      <article className={item.model === "our_model" ? "rank-card highlighted" : "rank-card"} key={item.model}>
-                        <span>#{index + 1}</span>
-                        <strong>{item.display_name}</strong>
-                        <small>RMSE {formatNumber(item.rmse)} · MAE {formatNumber(item.mae)} · R2 {formatNumber(item.r2)}</small>
-                      </article>
-                    ))}
-                  </div>
-                </div>
-              </section>
-
-              <section className="metric-visual-row">
-                <div className="panel chart-panel">
-                  <div className="panel-head">
-                    <span>Metrics</span>
-                    <h2>误差指标对比</h2>
-                  </div>
-                  <ResponsiveContainer width="100%" height={320}>
-                    <BarChart data={metricRows}>
-                      <CartesianGrid stroke="rgba(148, 163, 184, 0.16)" strokeDasharray="4 8" />
-                      <XAxis dataKey="model" tick={{ fill: "#8fa3b8", fontSize: 11 }} />
-                      <YAxis tick={{ fill: "#8fa3b8", fontSize: 11 }} />
-                      <Tooltip contentStyle={{ background: "#101922", border: "1px solid #263746", borderRadius: 16 }} />
-                      <Legend />
-                      <Bar dataKey="MAE" fill="#2dd4bf" radius={[9, 9, 0, 0]} />
-                      <Bar dataKey="RMSE" fill="#f43f5e" radius={[9, 9, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="panel chart-panel radar-panel">
-                  <div className="panel-head">
-                    <span>Radar</span>
-                    <h2>多指标雷达图</h2>
-                  </div>
-                  <ResponsiveContainer width="100%" height={320}>
-                    <RadarChart data={radarRows} outerRadius="72%">
-                      <PolarGrid stroke="rgba(148, 163, 184, 0.24)" />
-                      <PolarAngleAxis dataKey="metric" tick={{ fill: "#cad7e6", fontSize: 12 }} />
-                      <Tooltip contentStyle={{ background: "#101922", border: "1px solid #263746", borderRadius: 16 }} />
-                      {DEFAULT_MODELS.map((model) => (
-                        <Radar
-                          key={model}
-                          name={MODEL_META[model].label}
-                          dataKey={model}
-                          stroke={MODEL_META[model].color}
-                          fill={MODEL_META[model].color}
-                          fillOpacity={model === "our_model" ? 0.18 : 0.06}
-                          strokeWidth={model === "our_model" ? 3 : 1.8}
-                        />
-                      ))}
-                      <Legend />
-                    </RadarChart>
-                  </ResponsiveContainer>
-                </div>
-              </section>
-            </>
-          )}
-        </>
+          </div>
+        </section>
       )}
 
-      {activeView === "analysis" && (
-        <section className="analysis-layout">
-          <div className="panel analysis-command">
-            <div className="panel-head">
-              <span>AI Analysis</span>
-              <h2>Deepseek 分析工作台</h2>
-            </div>
-            <p>
-              该界面会把数据概况、预测指标和模型排名发送到后端分析接口。后端优先调用 Deepseek，未配置密钥时会返回本地规则报告，保证演示流程不断线。
-            </p>
-            <button className="primary-action" onClick={handleAnalysis} disabled={analysisLoading || !result}>
-              {analysisLoading ? "正在调用 Deepseek..." : "生成分析报告"}
-            </button>
-            {!result && <p className="message">需要先在预测驾驶舱完成一次预测。</p>}
-            {analysis && (
-              <div className="analysis-meta">
-                <span>Provider</span>
-                <strong>{analysis.provider}</strong>
-                <small>{analysis.model} · {analysis.mode === "online" ? "在线调用" : "离线兜底"}</small>
+      {activePage === "forecast" && (
+        <section className="dashboard-page">
+          <SectionTitle kicker="02" title="预测结果" note="默认使用 iManformer 作为主模型，同时保留 RNN、LSTM 与 Transformer 的对比结果。" />
+          <div className="top-stats">
+            <StatCard title="当前数据集" value={datasetSummary.source_name || "--"} detail="预测所使用的数据" />
+            <StatCard title="预测模型数" value={DEFAULT_MODELS.length} detail="参与本次评估的模型" />
+            <StatCard title="最佳模型" value={MODEL_META[bestModel]?.label || "--"} detail="按 RMSE 综合排序" tone="accent" />
+            <StatCard title="最近一次预测时间" value={datasetSummary.created_at ? formatDate(datasetSummary.created_at) : "--"} detail="最近加载或上传时间" />
+          </div>
+
+          <div className="forecast-grid">
+            <div className={chartPanelClass}>
+              <div className="panel-head">
+                <h3>功率预测趋势</h3>
+                <div className="panel-head-tools">
+                  <span>{chartView === "fullscreen" ? "全屏查看中，按 Esc 退出" : "拖拽曲线可框选缩放"}</span>
+                  <div className="chart-actions">
+                    <button
+                      className="chart-reset-button"
+                      onClick={resetChart}
+                      type="button"
+                      disabled={!chartData.length}
+                      aria-label="重置图表视图"
+                    >
+                      重置视图
+                    </button>
+                    <div className="chart-view-switch" role="group" aria-label="图表视图模式">
+                      {[
+                        ["normal", "常规"],
+                        ["wide", "宽屏"],
+                        ["fullscreen", "全屏"],
+                      ].map(([value, label]) => (
+                        <button
+                          key={value}
+                          className={chartView === value ? "active" : ""}
+                          onClick={() => setChartView(value)}
+                          type="button"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
-            )}
-          </div>
-
-          <div className="panel report-panel">
-            <div className="panel-head">
-              <span>Report</span>
-              <h2>分析报告</h2>
+              <ResponsiveContainer width="100%" height={chartHeight}>
+                <LineChart
+                  data={visibleChart}
+                  onMouseDown={handleChartMouseDown}
+                  onMouseMove={handleChartMouseMove}
+                  onMouseUp={handleChartMouseUp}
+                  onMouseLeave={() => {
+                    dragRef.current = false;
+                    setZoomDraft(null);
+                  }}
+                >
+                  <CartesianGrid stroke="rgba(124,164,177,0.12)" strokeDasharray="4 8" />
+                  <XAxis dataKey="time" tick={{ fill: "#9cb5c3", fontSize: 11 }} minTickGap={22} />
+                  <YAxis tick={{ fill: "#9cb5c3", fontSize: 11 }} />
+                  <Tooltip contentStyle={{ background: "#0d1b28", border: "1px solid rgba(124,164,177,0.28)", borderRadius: 14 }} />
+                  <Legend />
+                  <Line type="monotone" dataKey="actual" stroke="#e8f4f8" strokeWidth={2.6} dot={false} name="真实功率" />
+                  {DEFAULT_MODELS.map((model) => (
+                    <Line
+                      key={model}
+                      type="monotone"
+                      dataKey={model}
+                      stroke={MODEL_META[model].color}
+                      strokeOpacity={model === "our_model" ? 1 : 0.72}
+                      strokeWidth={model === "our_model" ? 3 : 1.7}
+                      dot={false}
+                      name={MODEL_META[model].label}
+                    />
+                  ))}
+                  {zoomDraft ? (
+                    <ReferenceArea
+                      x1={visibleChart[Math.min(zoomDraft.start, zoomDraft.end)]?.time}
+                      x2={visibleChart[Math.max(zoomDraft.start, zoomDraft.end)]?.time}
+                      fill="rgba(32,200,245,0.14)"
+                      strokeOpacity={0.2}
+                    />
+                  ) : null}
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="panel-foot">
+                <span>可视区间：{visibleRange} · {visiblePointCount}/{totalPointCount || 0} 点</span>
+              </div>
             </div>
-            <ReportMarkdown content={analysis?.report} />
-          </div>
 
-          <div className="panel insight-strip">
-            <span>iManformer</span>
-            <strong>{formatNumber(metrics.our_model?.RMSE)}</strong>
-            <small>当前 RMSE</small>
+            <div className="panel metrics-panel">
+              <div className="panel-head">
+                <h3>模型评估指标</h3>
+              </div>
+              <div className="metric-cards">
+                <StatCard title="MAE" value={formatNumber(ourMetrics.MAE)} detail="平均绝对误差" />
+                <StatCard title="RMSE" value={formatNumber(ourMetrics.RMSE)} detail="均方根误差" />
+                <StatCard title="MAPE" value={`${formatNumber(ourMetrics.MAPE)}%`} detail="平均绝对百分比误差" />
+                <StatCard title="R²" value={formatNumber(ourMetrics.R2, 3)} detail="拟合优度" />
+              </div>
+              <div className="compare-toggle">
+                <span>模型对比</span>
+                <button className={compareEnabled ? "toggle active" : "toggle"} onClick={() => setCompareEnabled((value) => !value)} type="button">
+                  {compareEnabled ? "已开启" : "未开启"}
+                </button>
+              </div>
+              {compareEnabled ? (
+                <div className="table-shell compact">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>模型</th>
+                        <th>MAE</th>
+                        <th>RMSE</th>
+                        <th>MAPE</th>
+                        <th>R²</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ranking.length ? ranking.map((item) => (
+                        <tr key={item.model} className={item.model === bestModel ? "highlight-row" : ""}>
+                          <td>{item.display_name}</td>
+                          <td>{formatNumber(item.mae)}</td>
+                          <td>{formatNumber(item.rmse)}</td>
+                          <td>{formatNumber(predictResult.metrics?.[item.model]?.MAPE)}%</td>
+                          <td>{formatNumber(item.r2, 3)}</td>
+                        </tr>
+                      )) : metricRows.map((item) => (
+                        <tr key={item.model}>
+                          <td>{item.model}</td>
+                          <td>{formatNumber(item.MAE)}</td>
+                          <td>{formatNumber(item.RMSE)}</td>
+                          <td>{formatNumber(item.MAPE)}%</td>
+                          <td>{formatNumber(item.R2, 3)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="empty-state compact-empty">默认展示 iManformer 指标。开启模型对比后可查看 RNN、LSTM、Transformer 横向结果。</div>
+              )}
+            </div>
+
+            <div className="panel chart-panel">
+              <div className="panel-head">
+                <h3>误差分析</h3>
+              </div>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={visibleChart}>
+                  <CartesianGrid stroke="rgba(124,164,177,0.12)" strokeDasharray="4 8" />
+                  <XAxis dataKey="time" tick={{ fill: "#9cb5c3", fontSize: 11 }} minTickGap={22} />
+                  <YAxis tick={{ fill: "#9cb5c3", fontSize: 11 }} />
+                  <Tooltip contentStyle={{ background: "#0d1b28", border: "1px solid rgba(124,164,177,0.28)", borderRadius: 14 }} />
+                  <Bar dataKey="our_model_error" fill="#20c8f5" radius={[8, 8, 0, 0]}>
+                    {visibleChart.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.our_model_error >= 0 ? "#f97316" : "#20c8f5"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="panel summary-panel">
+              <div className="panel-head">
+                <h3>预测摘要</h3>
+              </div>
+              <div className="summary-list">
+                <div><span>最优模型</span><strong>{MODEL_META[bestModel]?.label || "--"}</strong></div>
+                <div><span>预测步长</span><strong>{predictResult?.params?.horizon || horizon} 步</strong></div>
+                <div><span>总体表现</span><strong>{predictResult?.summary?.message || "曲线拟合良好"}</strong></div>
+                <div><span>首段误差</span><strong>{formatNumber(firstError, 3)}</strong></div>
+              </div>
+            </div>
           </div>
-          <div className="panel insight-strip warm">
-            <span>Data Rows</span>
-            <strong>{dataset?.rows?.toLocaleString() || "--"}</strong>
-            <small>分析样本规模</small>
+        </section>
+      )}
+
+      {activePage === "analysis" && (
+        <section className="dashboard-page">
+          <SectionTitle kicker="03" title="DeepSeek分析" note="输入问题后，系统会调用 DeepSeek Chat Completions 接口返回回答，并保留预测指标与分析报告。" />
+          <div className="analysis-layout">
+            <div className="analysis-chat-column">
+              <div className="panel analysis-panel analysis-question-panel">
+                <div className="panel-head">
+                  <h3>AI 问答</h3>
+                  <div className="panel-head-tools">
+                    <span>{analysisResult ? `${analysisResult.model} · ${analysisResult.mode === "online" ? "在线返回" : "离线返回"}` : "等待发送"}</span>
+                  </div>
+                </div>
+                <div className="question-box">
+                  <textarea
+                    rows="4"
+                    value={analysisQuestion}
+                    onChange={(e) => setAnalysisQuestion(e.target.value)}
+                    placeholder="请输入你想了解的问题，例如：某段误差为什么升高？"
+                  />
+                  <div className="question-actions">
+                    <button onClick={() => handleAnalysis()} disabled={analysisLoading || !predictResult} type="button">
+                      {analysisLoading ? "分析中..." : "发送"}
+                    </button>
+                    <span>{predictResult ? "基于当前预测结果回答" : "请先完成预测"}</span>
+                  </div>
+                </div>
+                <div className="tag-row" aria-label="常用问题">
+                  {SAMPLE_QUESTIONS.map((item) => (
+                    <button
+                      key={item}
+                      className={selectedQuestion === item ? "tag active" : "tag"}
+                      onClick={() => {
+                        setSelectedQuestion(item);
+                        setAnalysisQuestion(item);
+                      }}
+                      type="button"
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+                <div className="analysis-response">
+                  <div className="analysis-response-head">
+                    <span>回答</span>
+                    <strong>{analysisLoading ? "生成中" : analysisResult?.provider || "等待返回"}</strong>
+                  </div>
+                  {analysisLoading ? (
+                    <div className="answer-loading" aria-label="正在生成回答">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                  ) : null}
+                  {analysisResult ? (
+                    <div className="analysis-response-body">
+                      <div className="analysis-response-meta">
+                        <div>
+                          <span>来源</span>
+                          <strong>{analysisResult.provider || "Deepseek"}</strong>
+                        </div>
+                        <div>
+                          <span>模式</span>
+                          <strong>{analysisResult.mode === "online" ? "在线" : "离线"}</strong>
+                        </div>
+                        <div>
+                          <span>参考</span>
+                          <strong>{analysisResult.qa?.references?.length || 0} 项</strong>
+                        </div>
+                      </div>
+                      <div className="analysis-qa">
+                        <div>
+                          <span>问题</span>
+                          <p>{analysisResult.qa?.question || "未输入具体问题"}</p>
+                        </div>
+                        <div>
+                          <span>回答</span>
+                          <p>{analysisResult.qa?.answer || "当前分析已返回，但暂无可展示的问答内容。"}</p>
+                        </div>
+                      </div>
+                      {analysisResult.qa?.references?.length ? (
+                        <div className="analysis-references">
+                          {analysisResult.qa.references.map((item) => (
+                            <span key={item}>{item}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : !analysisLoading ? (
+                    <div className="empty-state compact-empty">
+                      发送问题后，这里会直接显示 AI 回答、来源和引用依据。
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            <div className="analysis-insight-column">
+              <div className="analysis-stat-row">
+                <StatCard title="最优模型" value={MODEL_META[bestModel]?.label || "--"} detail="按 RMSE 综合排序" tone="accent" />
+                <StatCard title="RMSE" value={formatNumber(ourMetrics.RMSE)} detail="iManformer" />
+                <StatCard title="MAE" value={formatNumber(ourMetrics.MAE)} detail="iManformer" />
+              </div>
+              <div className="panel analysis-panel diagnosis-panel">
+                <div className="panel-head">
+                  <h3>预测结果诊断</h3>
+                </div>
+                <ul className="diagnosis-list compact-diagnosis">
+                  <li><strong>稳定性</strong><span>预测曲线整体跟随真实功率变化。</span></li>
+                  <li><strong>误差风险</strong><span>重点查看高风速和爬坡区间的波动。</span></li>
+                  <li><strong>影响因素</strong><span>风速、风向和温度变化仍是主要扰动来源。</span></li>
+                </ul>
+              </div>
+              <div className="panel analysis-panel analysis-report-panel">
+                <div className="panel-head">
+                  <h3>分析报告</h3>
+                </div>
+                <ReportMarkdown content={analysisResult?.report} />
+              </div>
+            </div>
           </div>
         </section>
       )}

@@ -31,3 +31,27 @@ def test_run_prediction_on_minimal_frame():
 
     assert len(result["chart_data"]) == 24
     assert "our_model" in result["metrics"]
+
+
+def test_dataset_summary_reports_column_count_and_sample_interval():
+    from app.services.storage import DatasetStore
+
+    frame = pd.DataFrame(
+        {
+            "Time(year-month-day h:m:s)": [
+                "2024-01-01 00:00:00",
+                "2024-01-01 00:00:00",
+                "2024-01-01 00:15:00",
+                "2024-01-01 00:30:00",
+            ],
+            "Wind speed at height of 10 meters (m/s)": [4.2, 4.4, 4.6, 4.8],
+            "Power (MW)": [18.1, 18.4, 19.0, 19.7],
+        }
+    )
+    store = DatasetStore()
+
+    file_id = store.put(frame, source_name="demo.csv")
+    summary = store.describe(file_id)
+
+    assert summary["column_count"] == 3
+    assert summary["sample_interval"] == "15 分钟"
