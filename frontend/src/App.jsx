@@ -16,10 +16,10 @@ import {
 import { runAnalysis, runPredict, uploadDataset, listSamples, loadSample } from "./api";
 
 const MODEL_META = {
-  rnn: { label: "RNN", color: "#7ca4b1" },
-  lstm: { label: "LSTM", color: "#3b83a2" },
-  transformer: { label: "Transformer", color: "#20c8f5" },
-  our_model: { label: "iManformer", color: "#7fffd4" },
+  rnn: { label: "RNN", color: "#9fe7ff" },
+  lstm: { label: "LSTM", color: "#ffd166" },
+  transformer: { label: "Transformer", color: "#c9d6ff" },
+  our_model: { label: "iManformer", color: "#57f0d5" },
 };
 
 const NAV_ITEMS = [
@@ -37,7 +37,7 @@ const SAMPLE_QUESTIONS = [
   "你是什么模型？",
   "数据的变化趋势是什么？",
 ];
-const EMPTY_ANALYSIS_ANSWER = "当前分析已返回，但暂无可展示的问答内容。";
+const EMPTY_ANALYSIS_ANSWER = "当前分析已返回，暂无可展示的问答内容";
 
 function formatNumber(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
@@ -176,6 +176,185 @@ function createAnalysisTurn(question, id) {
   };
 }
 
+function toNumber(value) {
+  const number = Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(number) ? number : null;
+}
+
+function findColumn(columns, keywords) {
+  return columns.find((column) => {
+    const normalized = String(column).toLowerCase();
+    return keywords.some((keyword) => normalized.includes(keyword));
+  });
+}
+
+function formatMetric(value, unit, digits = 1) {
+  if (!Number.isFinite(value)) return "--";
+  return `${Number(value).toFixed(digits)} ${unit}`;
+}
+
+function windDirectionLabel(value) {
+  const degree = toNumber(value);
+  if (!Number.isFinite(degree)) return value ? String(value) : "--";
+  const labels = ["北风", "东北风", "东风", "东南风", "南风", "西南风", "西风", "西北风"];
+  return labels[Math.round((((degree % 360) + 360) % 360) / 45) % labels.length];
+}
+
+function weatherPhenomenon({ windSpeed, temperature, humidity }) {
+  if (Number.isFinite(windSpeed) && windSpeed >= 17.2) return "大风";
+  if (Number.isFinite(temperature) && temperature >= 35) return "高温";
+  if (Number.isFinite(temperature) && temperature <= 0) return "霜冻";
+  if (Number.isFinite(humidity) && humidity >= 85) return "阴雨";
+  if (Number.isFinite(humidity) && humidity >= 65) return "多云";
+  return "晴";
+}
+
+function warningRank(level) {
+  return ["", "蓝色", "黄色", "橙色", "红色"].indexOf(level);
+}
+
+function buildWarning(weather) {
+  const warnings = [];
+  const wind = weather.windSpeed;
+  const temp = weather.temperature;
+  const drop = weather.temperatureDrop;
+
+  if (Number.isFinite(wind)) {
+    if (wind >= 32.7) warnings.push({ type: "大风", level: "红色", detail: "阵风或平均风速达到十二级以上，需重点关注设备安全" });
+    else if (wind >= 24.5) warnings.push({ type: "大风", level: "橙色", detail: "风力达到十级以上，需限制高风险作业" });
+    else if (wind >= 17.2) warnings.push({ type: "大风", level: "黄色", detail: "风力达到八级以上，需加强巡检与偏航保护" });
+    else if (wind >= 10.8) warnings.push({ type: "大风", level: "蓝色", detail: "风力达到六级以上，建议关注机组载荷变化" });
+  }
+
+  if (Number.isFinite(temp)) {
+    if (temp >= 40) warnings.push({ type: "高温", level: "红色", detail: "最高气温达到40°C以上，需关注散热与限功率风险" });
+    else if (temp >= 37) warnings.push({ type: "高温", level: "橙色", detail: "最高气温达到37°C以上，需加强设备温升监测" });
+    else if (temp >= 35) warnings.push({ type: "高温", level: "黄色", detail: "最高气温达到35°C以上，建议关注运行温度裕度" });
+
+    if (temp <= -5) warnings.push({ type: "霜冻", level: "橙色", detail: "低温霜冻风险较高，需关注叶片结冰和传感器可靠性" });
+    else if (temp <= -3) warnings.push({ type: "霜冻", level: "黄色", detail: "存在霜冻风险，建议关注低温部件状态" });
+    else if (temp <= 0) warnings.push({ type: "霜冻", level: "蓝色", detail: "接近冰点，需关注局地霜冻可能" });
+  }
+
+  if (Number.isFinite(drop) && Number.isFinite(temp) && temp <= 4) {
+    if (drop >= 16) warnings.push({ type: "寒潮", level: "红色", detail: "降温幅度极大，需关注低温冲击和覆冰风险" });
+    else if (drop >= 12) warnings.push({ type: "寒潮", level: "橙色", detail: "降温明显，需提前检查防寒与防冰策略" });
+    else if (drop >= 10) warnings.push({ type: "寒潮", level: "黄色", detail: "冷空气影响增强，需关注低温运行风险" });
+    else if (drop >= 8) warnings.push({ type: "寒潮", level: "蓝色", detail: "气温下降明显，建议跟踪后续温度变化" });
+  }
+
+  return warnings.sort((a, b) => warningRank(b.level) - warningRank(a.level))[0] || {
+    type: "常规天气",
+    level: "平稳",
+    detail: "当前气象条件未触发重点灾害预警",
+  };
+}
+
+function buildWeatherProfile(dataset) {
+  const rows = dataset?.preview || [];
+  const current = rows[0] || {};
+  const columns = Object.keys(current);
+  const windSpeedColumn = findColumn(columns, ["wind speed", "风速"]);
+  const windDirectionColumn = findColumn(columns, ["wind direction", "风向"]);
+  const temperatureColumn = findColumn(columns, ["temperature", "温度"]);
+  const humidityColumn = findColumn(columns, ["humidity", "湿度"]);
+  const pressureColumn = findColumn(columns, ["atmosphere", "pressure", "气压"]);
+
+  const temperatures = rows.map((row) => toNumber(row[temperatureColumn])).filter(Number.isFinite);
+  const temperature = toNumber(current[temperatureColumn]);
+  const windSpeed = toNumber(current[windSpeedColumn]);
+  const humidity = toNumber(current[humidityColumn]);
+  const pressure = toNumber(current[pressureColumn]);
+  const weather = {
+    windSpeed,
+    windDirection: windDirectionLabel(current[windDirectionColumn]),
+    temperature,
+    humidity,
+    pressure,
+    phenomenon: weatherPhenomenon({ windSpeed, temperature, humidity }),
+    temperatureDrop: temperatures.length ? Math.max(...temperatures) - Math.min(...temperatures) : null,
+  };
+  const warning = buildWarning(weather);
+
+  return {
+    current: weather,
+    warning,
+    columns: {
+      windSpeed: windSpeedColumn,
+      windDirection: windDirectionColumn,
+      temperature: temperatureColumn,
+      humidity: humidityColumn,
+      pressure: pressureColumn,
+    },
+    forecast: rows.slice(0, 6).map((row, index) => {
+      const nextWind = toNumber(row[windSpeedColumn]);
+      const nextTemp = toNumber(row[temperatureColumn]);
+      const nextHumidity = toNumber(row[humidityColumn]);
+      return {
+        label: `+${index + 1}h`,
+        phenomenon: weatherPhenomenon({ windSpeed: nextWind, temperature: nextTemp, humidity: nextHumidity }),
+        wind: formatMetric(nextWind, "m/s"),
+        temperature: formatMetric(nextTemp, "°C"),
+      };
+    }),
+  };
+}
+
+function WeatherOverview({ profile, sourceName, timeRange }) {
+  const warningClass = `weather-warning level-${profile.warning.level}`;
+  const station = sourceName || "样例风电场基地";
+  const metricCards = [
+    ["当前风速", formatMetric(profile.current.windSpeed, "m/s"), "wind"],
+    ["风向", profile.current.windDirection || "--", "direction"],
+    ["温度", formatMetric(profile.current.temperature, "°C"), "temperature"],
+    ["湿度", formatMetric(profile.current.humidity, "%"), "humidity"],
+    ["气压", formatMetric(profile.current.pressure, "hPa"), "pressure"],
+    ["天气现象", profile.current.phenomenon, "weather"],
+  ];
+
+  return (
+    <div className="panel weather-panel">
+      <div className="panel-head">
+        <h3>气象站信息（当前实况）</h3>
+        <span className="panel-head-tools">
+          <span>依据国家气象灾害预警信号分级规则</span>
+        </span>
+      </div>
+      <div className={warningClass}>
+        <strong>{profile.warning.level === "平稳" ? "气象态势：平稳" : `气象预警：${profile.warning.type} ${profile.warning.level}预警`}</strong>
+        <span>{profile.warning.detail}</span>
+        <em>预警时段：{timeRange}</em>
+      </div>
+      <div className="weather-station-row">
+        <span>场站名称</span>
+        <strong>{station}</strong>
+      </div>
+      <div className="weather-metrics">
+        {metricCards.map(([label, value, icon]) => (
+          <div className="weather-metric" key={label}>
+            <i className={`weather-icon ${icon}`} />
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="weather-forecast">
+        <h4>逐小时气象片段（预览前6条）</h4>
+        <div>
+          {profile.forecast.length ? profile.forecast.map((item) => (
+            <article key={item.label}>
+              <strong>{item.label}</strong>
+              <span>{item.phenomenon}</span>
+              <small>风速 {item.wind}</small>
+              <small>温度 {item.temperature}</small>
+            </article>
+          )) : <p className="empty-state compact-empty">加载数据后生成气象片段</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatCard({ title, value, detail, tone = "default" }) {
   return (
     <article className={`stat-card ${tone}`}>
@@ -205,7 +384,7 @@ function DataPreviewTable({ rows, scrollable = false }) {
   }, [rows]);
 
   if (!rows?.length) {
-    return <div className="empty-state">加载样例或上传文件后，这里会显示前几行数据。</div>;
+    return <div className="empty-state">加载样例或上传文件后显示数据预览</div>;
   }
 
   return (
@@ -233,7 +412,7 @@ function DataPreviewTable({ rows, scrollable = false }) {
 }
 
 function ReportMarkdown({ content }) {
-  if (!content) return <div className="empty-state">完成预测后再生成分析报告，这里会显示结构化诊断结论。</div>;
+  if (!content) return <div className="empty-state">完成预测后生成结构化诊断结论</div>;
   const lines = String(content).split("\n");
   return (
     <div className="report-body">
@@ -244,6 +423,182 @@ function ReportMarkdown({ content }) {
       })}
     </div>
   );
+}
+
+function ParticleWindBackground() {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return undefined;
+
+    let frameId = 0;
+    let width = 0;
+    let height = 0;
+    let time = 0;
+    const skyParticles = Array.from({ length: 180 }, (_, index) => ({
+      seed: index * 13.17,
+      x: Math.random(),
+      y: Math.random(),
+      speed: 0.0008 + Math.random() * 0.0014,
+      size: 0.7 + Math.random() * 1.4,
+      alpha: 0.16 + Math.random() * 0.38,
+    }));
+
+    const resize = () => {
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      width = canvas.offsetWidth;
+      height = canvas.offsetHeight;
+      canvas.width = Math.floor(width * ratio);
+      canvas.height = Math.floor(height * ratio);
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    };
+
+    const line = (x1, y1, x2, y2, alpha, widthValue) => {
+      context.strokeStyle = `rgba(176, 223, 246, ${alpha})`;
+      context.lineWidth = widthValue;
+      context.beginPath();
+      context.moveTo(x1, y1);
+      context.lineTo(x2, y2);
+      context.stroke();
+    };
+
+    const glowDot = (x, y, radius, alpha) => {
+      context.fillStyle = `rgba(218, 244, 255, ${alpha})`;
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.fill();
+    };
+
+    const drawParticleSegment = (x1, y1, x2, y2, scale, density) => {
+      for (let step = 0; step <= density; step += 1) {
+        const progress = step / density;
+        const offset = Math.sin(progress * 12 + time * 0.025) * 1.2 * scale;
+        const x = x1 + (x2 - x1) * progress + offset;
+        const y = y1 + (y2 - y1) * progress + offset * 0.18;
+        glowDot(x, y, Math.max(0.7, 1.6 * scale * (0.55 + progress * 0.8)), 0.2 + progress * 0.55);
+      }
+    };
+
+    const drawTurbine = (x, baseY, scale, phase, brightness = 1) => {
+      const mastTop = baseY - 230 * scale;
+      const hubRadius = 8 * scale;
+      context.save();
+      context.shadowColor = `rgba(96, 210, 255, ${0.72 * brightness})`;
+      context.shadowBlur = 22 * scale;
+
+      line(x, baseY, x, mastTop, 0.68 * brightness, Math.max(1, 1.8 * scale));
+      drawParticleSegment(x, baseY, x, mastTop, scale, Math.max(24, Math.floor(42 * scale)));
+      glowDot(x, mastTop, hubRadius, 0.98 * brightness);
+
+      for (let blade = 0; blade < 3; blade += 1) {
+        const angle = phase + blade * ((Math.PI * 2) / 3);
+        const bladeLength = 148 * scale;
+        const tipX = x + Math.cos(angle) * bladeLength;
+        const tipY = mastTop + Math.sin(angle) * bladeLength;
+        line(x, mastTop, tipX, tipY, 0.74 * brightness, Math.max(1, 1.45 * scale));
+        drawParticleSegment(x, mastTop, tipX, tipY, scale, Math.max(22, Math.floor(46 * scale)));
+        glowDot(tipX, tipY, 2.6 * scale, 0.82 * brightness);
+      }
+
+      context.restore();
+    };
+
+    const drawMesh = () => {
+      const meshRows = 17;
+      const meshCols = 34;
+      const horizonY = height * 0.67;
+      const waveAt = (rowProgress, colProgress, rowIndex) => {
+        const amplitude = 14 + rowProgress * 52;
+        return (
+          Math.sin(colProgress * 8.4 + rowIndex * 0.42 + time * 0.012) * amplitude +
+          Math.cos(colProgress * 12.6 - rowIndex * 0.37 - time * 0.01) * amplitude * 0.36
+        );
+      };
+
+      for (let row = 0; row < meshRows; row += 1) {
+        const rowProgress = row / (meshRows - 1);
+        const y = horizonY + rowProgress * rowProgress * height * 0.27;
+        let previousPoint = null;
+
+        for (let col = 0; col < meshCols; col += 1) {
+          const colProgress = col / (meshCols - 1);
+          const x = colProgress * width;
+          const pointY = y + waveAt(rowProgress, colProgress, row);
+
+          if (previousPoint) {
+            line(previousPoint[0], previousPoint[1], x, pointY, 0.08 + rowProgress * 0.18, 1);
+          }
+
+          if (row > 0) {
+            const prevRowProgress = (row - 1) / (meshRows - 1);
+            const prevRowY = horizonY + prevRowProgress * prevRowProgress * height * 0.27;
+            const parentY = prevRowY + waveAt(prevRowProgress, colProgress, row - 1);
+            line(x, parentY, x, pointY, 0.05 + rowProgress * 0.16, 1);
+          }
+
+          if (col % 2 === 0 || row % 2 === 0) {
+            glowDot(x, pointY, 0.7 + rowProgress * 1.3, 0.12 + rowProgress * 0.36);
+          }
+
+          previousPoint = [x, pointY];
+        }
+      }
+    };
+
+    const draw = () => {
+      time += 1;
+      context.clearRect(0, 0, width, height);
+
+      const sky = context.createLinearGradient(0, 0, 0, height);
+      sky.addColorStop(0, "#071624");
+      sky.addColorStop(0.45, "#0c2437");
+      sky.addColorStop(1, "#07111b");
+      context.fillStyle = sky;
+      context.fillRect(0, 0, width, height);
+
+      const leftGlow = context.createRadialGradient(width * 0.16, height * 0.48, 0, width * 0.16, height * 0.48, width * 0.36);
+      leftGlow.addColorStop(0, "rgba(97, 191, 255, 0.28)");
+      leftGlow.addColorStop(1, "rgba(97, 191, 255, 0)");
+      context.fillStyle = leftGlow;
+      context.fillRect(0, 0, width, height);
+
+      drawMesh();
+      drawTurbine(width * 0.1, height * 0.82, 1.22, time * 0.012, 1);
+      drawTurbine(width * 0.91, height * 0.72, 0.58, -time * 0.011, 0.88);
+      drawTurbine(width * 0.03, height * 0.82, 0.38, time * 0.01, 0.55);
+      drawTurbine(width * 0.16, height * 0.84, 0.28, -time * 0.009, 0.42);
+      drawTurbine(width * 0.24, height * 0.83, 0.26, time * 0.01, 0.36);
+      drawTurbine(width * 0.85, height * 0.8, 0.22, -time * 0.008, 0.32);
+      drawTurbine(width * 0.96, height * 0.83, 0.18, time * 0.007, 0.26);
+
+      skyParticles.forEach((particle) => {
+        particle.x += particle.speed;
+        if (particle.x > 1.04) particle.x = -0.04;
+        const wave = Math.sin(time * 0.012 + particle.seed) * 0.02;
+        glowDot(particle.x * width, (0.08 + particle.y * 0.78 + wave) * height, particle.size, particle.alpha);
+      });
+
+      const vignette = context.createLinearGradient(0, 0, 0, height);
+      vignette.addColorStop(0, "rgba(4, 10, 18, 0.08)");
+      vignette.addColorStop(1, "rgba(4, 10, 18, 0.46)");
+      context.fillStyle = vignette;
+      context.fillRect(0, 0, width, height);
+
+      frameId = window.requestAnimationFrame(draw);
+    };
+
+    resize();
+    draw();
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      window.cancelAnimationFrame(frameId);
+    };
+  }, []);
+
+  return <canvas className="particle-wind-canvas" ref={canvasRef} aria-hidden="true" />;
 }
 
 function App() {
@@ -262,7 +617,7 @@ function App() {
   const [compareEnabled, setCompareEnabled] = useState(false);
   const [analysisQuestion, setAnalysisQuestion] = useState("");
   const [selectedQuestion, setSelectedQuestion] = useState(SAMPLE_QUESTIONS[0]);
-  const [dataStatus, setDataStatus] = useState("正在加载样例数据...");
+  const [dataStatus, setDataStatus] = useState("正在加载样例数据");
   const [chartWindow, setChartWindow] = useState({ start: 0, end: null });
   const [zoomDraft, setZoomDraft] = useState(null);
   const [chartView, setChartView] = useState("normal");
@@ -317,7 +672,7 @@ function App() {
 
   const handleLoadSample = () => {
     if (!selectedSample) return;
-    withLoading("正在加载样例数据...", async (signal) => {
+    withLoading("正在加载样例数据", async (signal) => {
       const data = await loadSample(selectedSample, { signal });
       setDataset(data);
       setPredictResult(null);
@@ -333,7 +688,7 @@ function App() {
   const handleUpload = (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    withLoading("正在上传并解析数据...", async (signal) => {
+    withLoading("正在上传并解析数据", async (signal) => {
       const data = await uploadDataset(file, { signal });
       setDataset(data);
       setPredictResult(null);
@@ -351,7 +706,7 @@ function App() {
       setMessage("请先加载样例数据或上传文件");
       return;
     }
-    withLoading("正在执行多模型预测...", async (signal) => {
+    withLoading("正在执行多模型预测", async (signal) => {
       const data = await runPredict(
         {
           file_id: dataset.file_id,
@@ -454,6 +809,7 @@ function App() {
   const datasetSummary = dataset || {};
   const inference = dataset?.inferred || {};
   const featureColumns = inference.feature_columns || [];
+  const weatherProfile = useMemo(() => buildWeatherProfile(dataset), [dataset]);
   const columnCount = inferColumnCount(datasetSummary);
   const sampleInterval = inferSampleInterval(datasetSummary, inference.time_column);
   const timeRange = datasetSummary.time_range
@@ -542,7 +898,7 @@ function App() {
             <i />
             <i />
           </span>
-          <span>风力发电功率预测系统</span>
+          <span>驭风智控</span>
         </button>
         <nav className="module-nav" aria-label="模块导航">
           {NAV_ITEMS.map((item) => (
@@ -565,26 +921,33 @@ function App() {
 
       {activePage === "start" && (
         <section className="start-screen">
+          <ParticleWindBackground />
+          <button className="hero-side-button hero-side-left" type="button" aria-label="返回数据加载" onClick={() => setActivePage("load")}>
+            ‹
+          </button>
+          <button className="hero-side-button hero-side-right" type="button" aria-label="进入DeepSeek分析" onClick={() => setActivePage("analysis")}>
+            ›
+          </button>
           <div className="start-hero">
             <p className="hero-kicker">Wind Power Forecasting & Intelligent Analysis</p>
-            <h1>风力发电功率预测系统</h1>
-            <p className="hero-copy">基于多模型预测与 DeepSeek 分析的风电功率辅助决策平台。</p>
+            <h1>驭风智控</h1>
+            <p className="hero-copy">基于多模型预测与 DeepSeek 分析的风电功率辅助决策平台</p>
           </div>
           <div className="start-grid">
             <button className="start-card" onClick={() => setActivePage("load")} type="button">
               <span className="start-icon doc-icon" aria-hidden="true" />
               <span className="start-card-title">数据加载</span>
-              <p>导入样例数据或上传本地风电数据，完成字段识别与数据预览。</p>
+              <p>导入样例数据或上传本地风电数据，完成字段识别与数据预览</p>
             </button>
             <button className="start-card" onClick={() => setActivePage("forecast")} type="button">
               <span className="start-icon chart-icon" aria-hidden="true" />
               <span className="start-card-title">预测结果</span>
-              <p>查看模型预测曲线、指标对比与误差分析。</p>
+              <p>查看模型预测曲线、指标对比与误差分析</p>
             </button>
             <button className="start-card" onClick={() => setActivePage("analysis")} type="button">
               <span className="start-icon ai-icon" aria-hidden="true" />
               <span className="start-card-title">DeepSeek分析</span>
-              <p>基于预测结果生成诊断报告、关键时刻说明和问答。</p>
+              <p>基于预测结果生成诊断报告、关键时刻说明和问答</p>
             </button>
           </div>
           <div className="process-rail" aria-label="流程">
@@ -602,7 +965,7 @@ function App() {
 
       {activePage === "load" && (
         <section className="dashboard-page">
-          <SectionTitle kicker="01" title="数据加载" note="导入样例或上传文件后，页面会自动识别时间列、目标列和气象特征列。" />
+          <SectionTitle kicker="01" title="数据加载" note="导入样例或上传文件后自动识别时间列、目标列和气象特征列" />
           <div className="load-stack">
             <div className="panel import-panel">
               <div className="panel-head">
@@ -616,7 +979,7 @@ function App() {
               </div>
               <div className="upload-zone">
                 <input accept=".csv,.xlsx,.xls" onChange={handleUpload} type="file" disabled={loading} />
-                <p>支持 CSV / XLSX / XLS，首行需为列名。</p>
+                <p>支持 CSV / XLSX / XLS，首行需为列名</p>
               </div>
               {dataStatus ? <p className="helper-line">{dataStatus}</p> : null}
               {message ? <p className="message-line">{message}</p> : null}
@@ -630,10 +993,11 @@ function App() {
                   <input type="number" min="8" max="2000" value={windowSize} onChange={(e) => setWindowSize(e.target.value)} />
                 </label>
                 <button onClick={handlePredict} disabled={!dataset || loading} type="button">
-                  {loading ? "处理中..." : "开始预测"}
+                  {loading ? "处理中" : "开始预测"}
                 </button>
               </div>
             </div>
+            <WeatherOverview profile={weatherProfile} sourceName={datasetSummary.source_name} timeRange={timeRange} />
             <div className="load-row">
               <div className="load-main-column">
                 <div className="panel preview-panel">
@@ -686,7 +1050,7 @@ function App() {
 
       {activePage === "forecast" && (
         <section className="dashboard-page">
-          <SectionTitle kicker="02" title="预测结果" note="默认使用 iManformer 作为主模型，同时保留 RNN、LSTM 与 Transformer 的对比结果。" />
+          <SectionTitle kicker="02" title="预测结果" note="默认使用 iManformer 作为主模型，同时保留 RNN、LSTM 与 Transformer 的对比结果" />
           <div className="top-stats">
             <StatCard title="当前数据集" value={datasetSummary.source_name || "--"} detail="预测所使用的数据" />
             <StatCard title="预测模型数" value={DEFAULT_MODELS.length} detail="参与本次评估的模型" />
@@ -743,9 +1107,9 @@ function App() {
                   <CartesianGrid stroke="rgba(124,164,177,0.12)" strokeDasharray="4 8" />
                   <XAxis dataKey="time" tick={{ fill: "#9cb5c3", fontSize: 11 }} minTickGap={22} />
                   <YAxis tick={{ fill: "#9cb5c3", fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: "#0d1b28", border: "1px solid rgba(124,164,177,0.28)", borderRadius: 14 }} />
+                  <Tooltip contentStyle={{ background: "#12262c", border: "1px solid rgba(212,227,230,0.28)", borderRadius: 14 }} />
                   <Legend />
-                  <Line type="monotone" dataKey="actual" stroke="#e8f4f8" strokeWidth={2.6} dot={false} name="真实功率" />
+                  <Line type="monotone" dataKey="actual" stroke="#ffffff" strokeWidth={2.6} dot={false} name="真实功率" />
                   {DEFAULT_MODELS.map((model) => (
                     <Line
                       key={model}
@@ -762,7 +1126,7 @@ function App() {
                     <ReferenceArea
                       x1={visibleChart[Math.min(zoomDraft.start, zoomDraft.end)]?.time}
                       x2={visibleChart[Math.max(zoomDraft.start, zoomDraft.end)]?.time}
-                      fill="rgba(32,200,245,0.14)"
+                      fill="rgba(106,199,235,0.16)"
                       strokeOpacity={0.2}
                     />
                   ) : null}
@@ -823,7 +1187,7 @@ function App() {
                   </table>
                 </div>
               ) : (
-                <div className="empty-state compact-empty">默认展示 iManformer 指标。开启模型对比后可查看 RNN、LSTM、Transformer 横向结果。</div>
+                <div className="empty-state compact-empty">默认展示 iManformer 指标，开启模型对比后可查看 RNN、LSTM、Transformer 横向结果</div>
               )}
             </div>
 
@@ -836,10 +1200,10 @@ function App() {
                   <CartesianGrid stroke="rgba(124,164,177,0.12)" strokeDasharray="4 8" />
                   <XAxis dataKey="time" tick={{ fill: "#9cb5c3", fontSize: 11 }} minTickGap={22} />
                   <YAxis tick={{ fill: "#9cb5c3", fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: "#0d1b28", border: "1px solid rgba(124,164,177,0.28)", borderRadius: 14 }} />
-                  <Bar dataKey="our_model_error" fill="#20c8f5" radius={[8, 8, 0, 0]}>
+                  <Tooltip contentStyle={{ background: "#12262c", border: "1px solid rgba(212,227,230,0.28)", borderRadius: 14 }} />
+                  <Bar dataKey="our_model_error" fill="#3b83a2" radius={[8, 8, 0, 0]}>
                     {visibleChart.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.our_model_error >= 0 ? "#f97316" : "#20c8f5"} />
+                      <Cell key={`cell-${index}`} fill={entry.our_model_error >= 0 ? "#ffd166" : "#57f0d5"} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -863,7 +1227,7 @@ function App() {
 
       {activePage === "analysis" && (
         <section className="dashboard-page">
-          <SectionTitle kicker="03" title="DeepSeek分析" note="输入问题后，系统会调用 DeepSeek Chat Completions 接口返回回答，并保留预测指标与分析报告。" />
+          <SectionTitle kicker="03" title="DeepSeek分析" note="输入问题后调用 DeepSeek Chat Completions 接口返回回答，并保留预测指标与分析报告" />
           <div className="analysis-layout">
             <div className="panel analysis-panel analysis-question-panel">
               <div className="panel-head">
@@ -885,7 +1249,7 @@ function App() {
                 />
                 <div className="question-actions">
                   <button onClick={() => handleAnalysis()} disabled={analysisLoading || !predictResult} type="button">
-                    {analysisLoading ? "分析中..." : "发送"}
+                    {analysisLoading ? "分析中" : "发送"}
                   </button>
                   <span>{predictResult ? "基于当前预测结果回答" : "请先完成预测"}</span>
                 </div>
@@ -917,9 +1281,9 @@ function App() {
                   <h3>预测结果诊断</h3>
                 </div>
                 <ul className="diagnosis-list compact-diagnosis">
-                  <li><strong>稳定性</strong><span>预测曲线整体跟随真实功率变化。</span></li>
-                  <li><strong>误差风险</strong><span>重点查看高风速和爬坡区间的波动。</span></li>
-                  <li><strong>影响因素</strong><span>风速、风向和温度变化仍是主要扰动来源。</span></li>
+                  <li><strong>稳定性</strong><span>预测曲线整体跟随真实功率变化</span></li>
+                  <li><strong>误差风险</strong><span>重点查看高风速和爬坡区间波动</span></li>
+                  <li><strong>影响因素</strong><span>风速、风向和温度变化仍是主要扰动来源</span></li>
                 </ul>
               </div>
             </div>
@@ -978,7 +1342,7 @@ function App() {
                 </div>
               ) : (
                 <div className="empty-state compact-empty">
-                  发送问题后，这里会按时间顺序保留每一轮提问与回答。
+                  发送问题后按时间顺序保留每一轮提问与回答
                 </div>
               )}
             </div>

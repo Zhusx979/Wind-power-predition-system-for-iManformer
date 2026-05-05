@@ -14,8 +14,11 @@ if (Test-Path $envFile) {
   }
 }
 
+$venvPython = Join-Path "$PSScriptRoot\.." ".venv\Scripts\python.exe"
 $condaPython = "$env:USERPROFILE\anaconda3\envs\deep_Learning\python.exe"
-if (Test-Path $condaPython) {
+if (Test-Path $venvPython) {
+  $python = $venvPython
+} elseif (Test-Path $condaPython) {
   $python = $condaPython
 } else {
   $python = "python"
