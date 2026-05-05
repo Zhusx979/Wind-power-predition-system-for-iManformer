@@ -34,6 +34,8 @@ const SAMPLE_QUESTIONS = [
   "未来 24 小时哪些气象因素影响最大？",
   "iManformer 相比其他模型优势在哪里？",
   "如何降低高风速区间的预测误差？",
+  "你是什么模型？",
+  "数据的变化趋势是什么？",
 ];
 const EMPTY_ANALYSIS_ANSWER = "当前分析已返回，但暂无可展示的问答内容。";
 
@@ -863,109 +865,48 @@ function App() {
         <section className="dashboard-page">
           <SectionTitle kicker="03" title="DeepSeek分析" note="输入问题后，系统会调用 DeepSeek Chat Completions 接口返回回答，并保留预测指标与分析报告。" />
           <div className="analysis-layout">
-            <div className="analysis-chat-column">
-              <div className="panel analysis-panel analysis-question-panel">
-                <div className="panel-head">
-                  <h3>AI 问答</h3>
-                  <div className="panel-head-tools">
-                    <span>{analysisResult ? `${analysisResult.model} · ${analysisResult.mode === "online" ? "在线返回" : "离线返回"}` : "等待发送"}</span>
-                  </div>
-                </div>
-                <div className="question-box">
-                  <textarea
-                    rows="4"
-                    value={analysisQuestion}
-                    onChange={(e) => {
-                      const { value } = e.target;
-                      setAnalysisQuestion(value);
-                      setSelectedQuestion(SAMPLE_QUESTIONS.includes(value) ? value : "");
-                    }}
-                    placeholder="请输入你想了解的问题，例如：某段误差为什么升高？"
-                  />
-                  <div className="question-actions">
-                    <button onClick={() => handleAnalysis()} disabled={analysisLoading || !predictResult} type="button">
-                      {analysisLoading ? "分析中..." : "发送"}
-                    </button>
-                    <span>{predictResult ? "基于当前预测结果回答" : "请先完成预测"}</span>
-                  </div>
-                </div>
-                <div className="tag-row" aria-label="常用问题">
-                  {SAMPLE_QUESTIONS.map((item) => (
-                    <button
-                      key={item}
-                      className={selectedQuestion === item ? "tag active" : "tag"}
-                      onClick={() => {
-                        setSelectedQuestion(item);
-                        setAnalysisQuestion(item);
-                      }}
-                      type="button"
-                    >
-                      {item}
-                    </button>
-                  ))}
+            <div className="panel analysis-panel analysis-question-panel">
+              <div className="panel-head">
+                <h3>AI 问答</h3>
+                <div className="panel-head-tools">
+                  <span>{analysisResult ? `${analysisResult.model} · ${analysisResult.mode === "online" ? "在线返回" : "离线返回"}` : "等待发送"}</span>
                 </div>
               </div>
-              <div className="panel analysis-panel analysis-conversation-panel">
-                <div className="panel-head">
-                  <h3>会话记录</h3>
-                  <div className="panel-head-tools">
-                    <span>{analysisHistory.length ? `共 ${analysisHistory.length} 轮问答` : "尚未开始对话"}</span>
-                  </div>
+              <div className="question-box">
+                <textarea
+                  rows="4"
+                  value={analysisQuestion}
+                  onChange={(e) => {
+                    const { value } = e.target;
+                    setAnalysisQuestion(value);
+                    setSelectedQuestion(SAMPLE_QUESTIONS.includes(value) ? value : "");
+                  }}
+                  placeholder="请输入你想了解的问题，例如：某段误差为什么升高？"
+                />
+                <div className="question-actions">
+                  <button onClick={() => handleAnalysis()} disabled={analysisLoading || !predictResult} type="button">
+                    {analysisLoading ? "分析中..." : "发送"}
+                  </button>
+                  <span>{predictResult ? "基于当前预测结果回答" : "请先完成预测"}</span>
                 </div>
-                {analysisHistory.length ? (
-                  <div className="analysis-thread">
-                    {analysisHistory.map((item, index) => (
-                      <article
-                        key={item.id}
-                        className={item.status === "error" ? "analysis-turn error" : "analysis-turn"}
-                      >
-                        <div className="analysis-turn-index">{String(index + 1).padStart(2, "0")}</div>
-                        <div className="analysis-turn-card user-turn">
-                          <div className="analysis-turn-head">
-                            <span>问题</span>
-                            <strong>用户输入</strong>
-                          </div>
-                          <p>{item.question || "未输入具体问题"}</p>
-                        </div>
-                        <div className="analysis-turn-card assistant-turn">
-                          <div className="analysis-turn-head">
-                            <span>回答</span>
-                            <strong>
-                              {item.status === "loading" ? "生成中" : item.provider || "DeepSeek"}
-                            </strong>
-                          </div>
-                          {item.status === "loading" ? (
-                            <div className="answer-loading" aria-label="正在生成回答">
-                              <span />
-                              <span />
-                              <span />
-                            </div>
-                          ) : (
-                            <p>{item.answer || EMPTY_ANALYSIS_ANSWER}</p>
-                          )}
-                          <div className="analysis-turn-meta">
-                            <span>{item.mode === "online" ? "在线" : item.mode === "error" ? "失败" : "离线"}</span>
-                            <strong>{item.model || "deepseek-v4-flash"}</strong>
-                          </div>
-                          {item.references?.length ? (
-                            <div className="analysis-references">
-                              {item.references.map((reference) => (
-                                <span key={`${item.id}-${reference}`}>{reference}</span>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-state compact-empty">
-                    发送问题后，这里会按时间顺序保留每一轮提问与回答。
-                  </div>
-                )}
+              </div>
+              <div className="tag-row" aria-label="常用问题">
+                {SAMPLE_QUESTIONS.map((item) => (
+                  <button
+                    key={item}
+                    className={selectedQuestion === item ? "tag active" : "tag"}
+                    onClick={() => {
+                      setSelectedQuestion(item);
+                      setAnalysisQuestion(item);
+                    }}
+                    type="button"
+                  >
+                    {item}
+                  </button>
+                ))}
               </div>
             </div>
-            <div className="analysis-insight-column">
+            <div className="analysis-overview-stack">
               <div className="analysis-stat-row">
                 <StatCard title="最优模型" value={MODEL_META[bestModel]?.label || "--"} detail="按 RMSE 综合排序" tone="accent" />
                 <StatCard title="RMSE" value={formatNumber(ourMetrics.RMSE)} detail="iManformer" />
@@ -981,12 +922,71 @@ function App() {
                   <li><strong>影响因素</strong><span>风速、风向和温度变化仍是主要扰动来源。</span></li>
                 </ul>
               </div>
-              <div className="panel analysis-panel analysis-report-panel">
-                <div className="panel-head">
-                  <h3>分析报告</h3>
+            </div>
+            <div className="panel analysis-panel analysis-conversation-panel">
+              <div className="panel-head">
+                <h3>会话记录</h3>
+                <div className="panel-head-tools">
+                  <span>{analysisHistory.length ? `共 ${analysisHistory.length} 轮问答` : "尚未开始对话"}</span>
                 </div>
-                <ReportMarkdown content={analysisResult?.report} />
               </div>
+              {analysisHistory.length ? (
+                <div className="analysis-thread">
+                  {analysisHistory.map((item, index) => (
+                    <article
+                      key={item.id}
+                      className={item.status === "error" ? "analysis-turn error" : "analysis-turn"}
+                    >
+                      <div className="analysis-turn-index">{String(index + 1).padStart(2, "0")}</div>
+                      <div className="analysis-turn-card user-turn">
+                        <div className="analysis-turn-head">
+                          <span>问题</span>
+                          <strong>用户输入</strong>
+                        </div>
+                        <p>{item.question || "未输入具体问题"}</p>
+                      </div>
+                      <div className="analysis-turn-card assistant-turn">
+                        <div className="analysis-turn-head">
+                          <span>回答</span>
+                          <strong>
+                            {item.status === "loading" ? "生成中" : item.provider || "DeepSeek"}
+                          </strong>
+                        </div>
+                        {item.status === "loading" ? (
+                          <div className="answer-loading" aria-label="正在生成回答">
+                            <span />
+                            <span />
+                            <span />
+                          </div>
+                        ) : (
+                          <p>{item.answer || EMPTY_ANALYSIS_ANSWER}</p>
+                        )}
+                        <div className="analysis-turn-meta">
+                          <span>{item.mode === "online" ? "在线" : item.mode === "error" ? "失败" : "离线"}</span>
+                          <strong>{item.model || "deepseek-v4-flash"}</strong>
+                        </div>
+                        {item.references?.length ? (
+                          <div className="analysis-references">
+                            {item.references.map((reference) => (
+                              <span key={`${item.id}-${reference}`}>{reference}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-state compact-empty">
+                  发送问题后，这里会按时间顺序保留每一轮提问与回答。
+                </div>
+              )}
+            </div>
+            <div className="panel analysis-panel analysis-report-panel">
+              <div className="panel-head">
+                <h3>分析报告</h3>
+              </div>
+              <ReportMarkdown content={analysisResult?.report} />
             </div>
           </div>
         </section>

@@ -684,7 +684,9 @@ td {
 }
 
 .analysis-layout {
+  --analysis-scroll-height: clamp(360px, 50dvh, 680px);
   grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr);
+  grid-template-rows: auto minmax(0, 1fr);
   align-items: stretch;
 }
 
@@ -692,8 +694,7 @@ td {
 .analysis-main,
 .analysis-overview,
 .analysis-workspace,
-.analysis-chat-column,
-.analysis-insight-column {
+.analysis-overview-stack {
   min-width: 0;
   display: grid;
   gap: 16px;
@@ -704,26 +705,23 @@ td {
   grid-template-rows: auto minmax(360px, 1fr);
 }
 
-.analysis-chat-column,
-.analysis-insight-column {
-  align-content: stretch;
-}
-
-.analysis-chat-column {
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.analysis-insight-column {
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
 .analysis-overview {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: start;
 }
 
+.analysis-layout > * {
+  min-width: 0;
+}
+
+.analysis-overview-stack {
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+}
+
 .diagnosis-panel {
-  grid-column: auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .analysis-stat-row {
@@ -1114,19 +1112,29 @@ td {
 .report-body {
   display: grid;
   gap: 10px;
-  max-height: clamp(260px, 38dvh, 520px);
+  height: var(--analysis-scroll-height);
+  max-height: var(--analysis-scroll-height);
   overflow: auto;
   padding-right: 6px;
   color: #d7e5eb;
   line-height: 1.8;
   scrollbar-color: rgba(36, 205, 246, 0.66) rgba(4, 21, 38, 0.45);
   scrollbar-width: thin;
+  overscroll-behavior: contain;
 }
 
 .report-body h3 {
-  margin-bottom: 6px;
+  margin: 0;
   color: #f2fbfe;
   font-size: 20px;
+}
+
+.report-body p {
+  margin: 0;
+}
+
+.report-body br {
+  display: none;
 }
 
 .report-item {
@@ -1249,14 +1257,22 @@ td {
   min-height: 100%;
 }
 
+.analysis-report-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100%;
+}
+
 .analysis-thread {
   display: grid;
   gap: 14px;
-  max-height: clamp(360px, 50dvh, 680px);
+  height: var(--analysis-scroll-height);
+  max-height: var(--analysis-scroll-height);
   overflow: auto;
   padding-right: 6px;
   scrollbar-color: rgba(36, 205, 246, 0.66) rgba(4, 21, 38, 0.45);
   scrollbar-width: thin;
+  overscroll-behavior: contain;
 }
 
 .analysis-turn {
@@ -1588,9 +1604,14 @@ td {
   }
 
   .report-body {
+    height: auto;
     max-height: none;
     overflow: visible;
     padding-right: 0;
+  }
+
+  .analysis-thread {
+    height: auto;
   }
 
   .preview-panel,
