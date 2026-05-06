@@ -29,6 +29,7 @@ const NAV_ITEMS = [
 ];
 
 const DEFAULT_MODELS = Object.keys(MODEL_META);
+const DEFAULT_ANALYSIS_MODEL = "deepseek-chat";
 const SAMPLE_QUESTIONS = [
   "为什么 08:00-10:00 误差会上升？",
   "未来 24 小时哪些气象因素影响最大？",
@@ -153,7 +154,7 @@ function normalizeAnalysisResult(result, question) {
     ...result,
     provider: result.provider || "DeepSeek Chat Completions",
     mode: result.mode || "offline",
-    model: result.model || "deepseek-v4-flash",
+    model: result.model || DEFAULT_ANALYSIS_MODEL,
     qa: {
       question: qa.question || question || "",
       answer: qa.answer || EMPTY_ANALYSIS_ANSWER,
@@ -170,7 +171,7 @@ function createAnalysisTurn(question, id) {
     references: [],
     provider: "DeepSeek Chat Completions",
     mode: "pending",
-    model: "deepseek-v4-flash",
+    model: DEFAULT_ANALYSIS_MODEL,
     report: "",
     status: "loading",
   };
@@ -1326,7 +1327,7 @@ function App() {
                         )}
                         <div className="analysis-turn-meta">
                           <span>{item.mode === "online" ? "在线" : item.mode === "error" ? "失败" : "离线"}</span>
-                          <strong>{item.model || "deepseek-v4-flash"}</strong>
+                          <strong>{item.model || DEFAULT_ANALYSIS_MODEL}</strong>
                         </div>
                         {item.references?.length ? (
                           <div className="analysis-references">

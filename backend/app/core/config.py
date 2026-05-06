@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -19,7 +20,7 @@ def _load_env_file(env_path: Path) -> None:
 class Settings:
     def __init__(self) -> None:
         self.api_prefix = "/api/v1"
-        self.project_root = Path(__file__).resolve().parents[3]
+        self.project_root = _resolve_project_root()
         _load_env_file(self.project_root / "backend" / ".env")
         self.max_preview_rows = 8
         self.max_upload_mb = 80
@@ -33,6 +34,13 @@ class Settings:
 
 def get_settings() -> Settings:
     return Settings()
+
+
+def _resolve_project_root() -> Path:
+    bundled_root = getattr(sys, "_MEIPASS", None)
+    if bundled_root:
+        return Path(bundled_root)
+    return Path(__file__).resolve().parents[3]
 
 
 settings = get_settings()

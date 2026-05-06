@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import ssl
 import urllib.error
 import urllib.request
 from typing import Any
@@ -11,7 +13,8 @@ import numpy as np
 import pandas as pd
 from app.core.config import settings as _settings  # Ensure backend/.env is loaded for direct imports.
 
-HARDCODED_DEEPSEEK_API_KEY = "sk-6eabc327456b4a6ba4e65849baff08e9"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_API_KEY = "sk-59ee22cb06f44fae87854c0a8c58c9ce"
 
 
 def analyze_with_domestic_model(df: pd.DataFrame, request: Any) -> dict[str, Any]:
@@ -24,7 +27,7 @@ def analyze_with_domestic_model(df: pd.DataFrame, request: Any) -> dict[str, Any
     if report:
         return {
             "provider": "DeepSeek Chat Completions",
-            "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+            "model": _get_deepseek_model(),
             "mode": "online",
             "report": report,
             "context": context,
@@ -82,13 +85,13 @@ def _build_prompt(context: dict[str, Any], question: str = "") -> str:
 
 
 def _call_deepseek(prompt: str) -> dict[str, str] | None:
-    api_key = os.getenv("DEEPSEEK_API_KEY") or HARDCODED_DEEPSEEK_API_KEY
+    api_key = _get_deepseek_api_key()
     if not api_key:
         return None
 
-    url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/chat/completions")
+    url = _get_deepseek_endpoint()
     payload = {
-        "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "model": _get_deepseek_model(),
         "messages": [
             {"role": "system", "content": "你是严谨的中文风电数据分析专家。"},
             {"role": "user", "content": prompt},
@@ -108,15 +111,18 @@ def _call_deepseek(prompt: str) -> dict[str, str] | None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=25) as response:
+        opener = _build_url_opener()
+        with opener.open(request, timeout=25) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore").strip()
         return {"error": f"HTTP {exc.code}{f': {detail[:180]}' if detail else ''}"}
     except urllib.error.URLError as exc:
         return {"error": f"网络请求失败：{exc.reason}"}
-    except TimeoutError:
+    except (TimeoutError, socket.timeout):
         return {"error": "请求 DeepSeek 超时"}
+    except ssl.SSLError as exc:
+        return {"error": f"SSL 连接失败：{exc}"}
     except (json.JSONDecodeError, KeyError):
         return {"error": "DeepSeek 返回内容解析失败"}
 
@@ -125,6 +131,31 @@ def _call_deepseek(prompt: str) -> dict[str, str] | None:
     if not content:
         return {"error": "DeepSeek 未返回有效 content"}
     return {"content": content}
+
+
+def _get_deepseek_api_key() -> str:
+    return (os.getenv("DEEPSEEK_API_KEY") or DEEPSEEK_API_KEY).strip()
+
+
+def _get_deepseek_model() -> str:
+    return (os.getenv("DEEPSEEK_MODEL") or DEFAULT_DEEPSEEK_MODEL).strip()
+
+
+def _get_deepseek_endpoint() -> str:
+    configured = (os.getenv("DEEPSEEK_API_URL") or os.getenv("DEEPSEEK_BASE_URL") or "").strip().rstrip("/")
+    if not configured:
+        return "https://api.deepseek.com/chat/completions"
+    if configured.endswith("/chat/completions"):
+        return configured
+    return f"{configured}/chat/completions"
+
+
+def _build_url_opener() -> urllib.request.OpenerDirector:
+    use_system_proxy = os.getenv("DEEPSEEK_USE_SYSTEM_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}
+    if use_system_proxy:
+        return urllib.request.build_opener()
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def _build_local_report(context: dict[str, Any]) -> str:
     best_model = context.get("best_model") or "iManformer"
@@ -187,10 +218,37 @@ def _build_offline_answer(context: dict[str, Any], question: str, online_error: 
     rmse = context.get("best_rmse")
     mae = context.get("best_mae")
     reason = online_error or "在线接口暂不可用"
+    normalized_question = question.strip().lower()
+
+    if "什么模型" in normalized_question or "你是谁" in normalized_question or "what model" in normalized_question:
+        core_answer = (
+            "我是本系统内置的风电功率预测分析助手。在线接口可用时会调用 DeepSeek Chat Completions；"
+            "当前由本地规则诊断模块基于预测结果、误差指标和气象特征生成回答。"
+        )
+    elif "优势" in normalized_question or "imanformer" in normalized_question:
+        core_answer = (
+            f"当前结果中 {best_model} 综合误差最低，RMSE={rmse}，MAE={mae}。"
+            "它的展示优势主要体现在对功率趋势的跟随更稳定、误差峰值更低，并且在多模型对比中更适合作为主推预测曲线。"
+        )
+    elif "误差" in normalized_question or "为什么" in normalized_question:
+        core_answer = (
+            f"本地诊断显示 {best_model} 暂时是综合误差最低的模型，RMSE={rmse}，MAE={mae}。"
+            "误差升高通常和风速风向快速变化、功率爬坡段、异常限电或原始数据缺测有关；建议重点查看误差柱状图峰值对应的时间段。"
+        )
+    elif "因素" in normalized_question or "影响" in normalized_question:
+        core_answer = (
+            "影响风电功率预测的主要因素包括轮毂高度风速、风向、温度、湿度和气压。"
+            "其中风速通常贡献最大，风向突变和温度变化会影响机组运行状态与空气密度，从而放大局部预测误差。"
+        )
+    else:
+        core_answer = (
+            f"结合当前预测结果，{best_model} 暂时表现最好，RMSE={rmse}，MAE={mae}。"
+            "整体应重点关注真实功率曲线与预测曲线的偏离区间，并结合风速、风向和温度变化判断误差来源。"
+        )
+
     return (
-        f"当前未获取到 DeepSeek 在线回答（{reason}）。"
-        f"本地诊断显示 {best_model} 暂时是综合误差最低的模型，RMSE={rmse}，MAE={mae}。"
-        f"如果你要追问“{question[:120]}”，请先检查后端 DeepSeek 配置和网络连通性，恢复在线接口后即可返回真实 AI 回答。"
+        f"{core_answer}"
+        f"\n\n在线 DeepSeek 未接通：{reason}。配置 DEEPSEEK_API_KEY 且网络可访问后，将自动切换为在线回答。"
     )
 
 
