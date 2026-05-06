@@ -23,7 +23,57 @@ function Invoke-Checked {
   }
 }
 
+function Stop-RunningReleaseProcess {
+  param(
+    [string]$ExecutablePath
+  )
+
+  $targetPath = [System.IO.Path]::GetFullPath($ExecutablePath)
+  $running = Get-Process -Name "YufengForecast" -ErrorAction SilentlyContinue | Where-Object {
+    try {
+      $_.Path -and ([System.IO.Path]::GetFullPath($_.Path) -eq $targetPath)
+    } catch {
+      $false
+    }
+  }
+
+  if ($running) {
+    Write-Host "Stopping running release exe before packaging..."
+    $running | Stop-Process -Force
+    Start-Sleep -Seconds 1
+  }
+}
+
+function Wait-ForUnlockedFile {
+  param(
+    [string]$Path,
+    [int]$TimeoutSeconds = 10
+  )
+
+  if (-not (Test-Path $Path)) {
+    return
+  }
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      $stream = [System.IO.File]::Open($Path, "Open", "ReadWrite", "None")
+      $stream.Close()
+      return
+    } catch [System.IO.IOException] {
+    } catch [System.UnauthorizedAccessException] {
+    }
+
+    Start-Sleep -Milliseconds 300
+  }
+
+  throw "The existing exe is still locked. Close YufengForecast.exe and try again."
+}
+
 Set-Location $root
+
+Stop-RunningReleaseProcess -ExecutablePath $exe
+Wait-ForUnlockedFile -Path $exe
 
 if (-not (Test-Path $python)) {
   Invoke-Checked { python -m venv $venv } "Failed to create .release-venv."
