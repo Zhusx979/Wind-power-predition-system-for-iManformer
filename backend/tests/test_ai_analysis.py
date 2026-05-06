@@ -4,12 +4,14 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from app.services.ai_analysis import analyze_with_domestic_model
+import app.services.ai_analysis as ai_analysis
+from app.services.ai_analysis import _extract_answer_from_report, analyze_with_domestic_model
 from app.services.predict_service import run_prediction
 
 
 def test_analysis_returns_report_and_qa(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(ai_analysis, "HARDCODED_DEEPSEEK_API_KEY", "")
 
     rows = 140
     frame = pd.DataFrame(
@@ -40,4 +42,26 @@ def test_analysis_returns_report_and_qa(monkeypatch):
     assert "reasoning" not in analysis
     assert analysis["qa"]["question"] == "为什么误差会上升？"
     assert analysis["qa"]["answer"]
+    assert "未获取到 DeepSeek 在线回答" in analysis["qa"]["answer"]
     assert analysis["mode"] in {"offline", "online"}
+
+
+def test_extract_answer_from_structured_report():
+    report = """## 回答
+- 当前功率整体呈先升后降趋势，误差主要集中在爬坡区间。
+
+## 分析报告
+- 这里是详细报告。
+"""
+
+    assert _extract_answer_from_report(report) == "当前功率整体呈先升后降趋势，误差主要集中在爬坡区间。"
+
+
+def test_extract_answer_before_report_heading():
+    report = """风电功率整体呈周期性波动，高风速时段输出更高。
+
+## 分析报告
+- 这里是详细报告。
+"""
+
+    assert _extract_answer_from_report(report) == "风电功率整体呈周期性波动，高风速时段输出更高。"

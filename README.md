@@ -58,7 +58,7 @@
 ### 5. 本地运行兼容性
 
 - 后端 Pydantic schema 类型标注调整为 Python 3.9 兼容写法
-- 后端启动脚本优先使用项目根目录下的 `.venv`
+- 后端启动脚本会自动寻找已安装后端依赖的 Python 环境，优先使用当前已激活环境，其次回退到项目根目录下的 `.venv`
 - 前端启动脚本改用 `npm.cmd run dev`，避免 Windows PowerShell 执行策略拦截 `npm.ps1`
 
 ## 部署与运行
@@ -71,7 +71,7 @@
 
 ### 1. 安装后端依赖
 
-在项目根目录打开 PowerShell 后执行：
+在项目根目录打开 PowerShell 后执行。推荐先激活你自己的 Python 环境；可使用 `venv` 或 Conda：
 
 ```powershell
 python -m venv .venv
@@ -95,13 +95,20 @@ Set-Location ..
 .\scripts\start-backend.ps1
 ```
 
+脚本会按以下顺序自动寻找可用解释器：
+
+- 当前已激活的虚拟环境
+- 当前已激活的 Conda 环境
+- 项目根目录下的 `.venv`
+- 系统中的 `py -3` 或 `python`
+
 手动启动方式：
 
 ```powershell
+python --version
 Set-Location backend
 $env:PYTHONPATH = (Get-Location).Path
-$python = Join-Path (Resolve-Path ..).Path ".venv\Scripts\python.exe"
-& $python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 ### 4. 启动前端网页

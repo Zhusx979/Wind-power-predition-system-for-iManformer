@@ -35,7 +35,7 @@ const SAMPLE_QUESTIONS = [
   "iManformer 相比其他模型优势在哪里？",
   "如何降低高风速区间的预测误差？",
   "你是什么模型？",
-  "数据的变化趋势是什么？",
+  "结合当前预测结果，功率和误差的整体变化趋势是什么？",
 ];
 const EMPTY_ANALYSIS_ANSWER = "当前分析已返回，暂无可展示的问答内容";
 
@@ -931,7 +931,6 @@ function App() {
           <div className="start-hero">
             <p className="hero-kicker">Wind Power Forecasting & Intelligent Analysis</p>
             <h1>驭风智控</h1>
-            <p className="hero-copy">基于多模型预测与 DeepSeek 分析的风电功率辅助决策平台</p>
           </div>
           <div className="start-grid">
             <button className="start-card" onClick={() => setActivePage("load")} type="button">

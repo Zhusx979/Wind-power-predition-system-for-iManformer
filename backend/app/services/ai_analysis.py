@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Any
@@ -10,6 +11,8 @@ import numpy as np
 import pandas as pd
 from app.core.config import settings as _settings  # Ensure backend/.env is loaded for direct imports.
 
+HARDCODED_DEEPSEEK_API_KEY = "sk-6eabc327456b4a6ba4e65849baff08e9"
+
 
 def analyze_with_domestic_model(df: pd.DataFrame, request: Any) -> dict[str, Any]:
     context = _build_context(df, request.prediction_result or {})
@@ -17,6 +20,7 @@ def analyze_with_domestic_model(df: pd.DataFrame, request: Any) -> dict[str, Any
     prompt = _build_prompt(context, question)
     online_result = _call_deepseek(prompt)
     report = online_result.get("content") if online_result else None
+    online_error = online_result.get("error") if online_result else "未配置 DEEPSEEK_API_KEY"
     if report:
         return {
             "provider": "DeepSeek Chat Completions",
@@ -24,7 +28,7 @@ def analyze_with_domestic_model(df: pd.DataFrame, request: Any) -> dict[str, Any
             "mode": "online",
             "report": report,
             "context": context,
-            "qa": _build_qa_pairs(context, question, report),
+            "qa": _build_qa_pairs(context, question, report=report, mode="online"),
         }
 
     return {
@@ -33,7 +37,7 @@ def analyze_with_domestic_model(df: pd.DataFrame, request: Any) -> dict[str, Any
         "mode": "offline",
         "report": _build_local_report(context),
         "context": context,
-        "qa": _build_qa_pairs(context, question),
+        "qa": _build_qa_pairs(context, question, mode="offline", online_error=online_error),
     }
 
 
@@ -78,7 +82,7 @@ def _build_prompt(context: dict[str, Any], question: str = "") -> str:
 
 
 def _call_deepseek(prompt: str) -> dict[str, str] | None:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("DEEPSEEK_API_KEY") or HARDCODED_DEEPSEEK_API_KEY
     if not api_key:
         return None
 
@@ -106,13 +110,20 @@ def _call_deepseek(prompt: str) -> dict[str, str] | None:
     try:
         with urllib.request.urlopen(request, timeout=25) as response:
             body = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
-        return None
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore").strip()
+        return {"error": f"HTTP {exc.code}{f': {detail[:180]}' if detail else ''}"}
+    except urllib.error.URLError as exc:
+        return {"error": f"网络请求失败：{exc.reason}"}
+    except TimeoutError:
+        return {"error": "请求 DeepSeek 超时"}
+    except (json.JSONDecodeError, KeyError):
+        return {"error": "DeepSeek 返回内容解析失败"}
 
     message = body.get("choices", [{}])[0].get("message", {})
     content = message.get("content")
     if not content:
-        return None
+        return {"error": "DeepSeek 未返回有效 content"}
     return {"content": content}
 
 def _build_local_report(context: dict[str, Any]) -> str:
@@ -129,7 +140,7 @@ def _build_local_report(context: dict[str, Any]) -> str:
 
     return "\n".join(
         [
-            "## Deepseek 分析报告",
+            "## 分析报告",
             f"- 数据规模：共 {context.get('rows', 0)} 行，目标列为 `{context.get('target_column') or '未显式指定'}`。",
             f"- 出力概况：平均功率约 {mean_power:.3f} MW，容量代理值约 {capacity:.3f} MW，{load_level}。",
             f"- 模型表现：当前最优模型为 {best_model}，RMSE={rmse}，MAE={mae}，曲线贴合程度优于其他基线模型。",
@@ -143,35 +154,68 @@ def _build_local_report(context: dict[str, Any]) -> str:
 def _extract_answer_from_report(report: str | None) -> str | None:
     if not report:
         return None
+
+    match = re.search(
+        r"^\s*#{1,6}\s*回答(?:[:：]\s*(.*))?\s*$([\s\S]*?)(?=^\s*#{1,6}\s+|\Z)",
+        report,
+        flags=re.MULTILINE,
+    )
+    if match:
+        inline_answer = (match.group(1) or "").strip()
+        block_answer = "\n".join(
+            line.strip().lstrip("- ").strip()
+            for line in match.group(2).splitlines()
+            if line.strip()
+        ).strip()
+        return inline_answer or block_answer or None
+
     lines = [line.strip() for line in report.splitlines() if line.strip()]
-    for index, line in enumerate(lines):
-        normalized = line.lstrip("#-0123456789.、 ").strip()
-        if normalized.startswith(("回答", "用户追问", "追问回答")):
-            following = lines[index + 1 : index + 4]
-            if following:
-                answer_lines = []
-                for item in following:
-                    if item.startswith("#"):
-                        break
-                    answer_lines.append(item.lstrip("- "))
-                if answer_lines:
-                    return "\n".join(answer_lines)
-            return normalized
+    answer_lines: list[str] = []
+    for line in lines:
+        if re.match(r"^\s*#{1,6}\s*分析报告", line):
+            break
+        if re.match(r"^\s*#{1,6}\s*", line):
+            continue
+        answer_lines.append(line.lstrip("- ").strip())
+    if answer_lines:
+        return "\n".join(answer_lines).strip()
     return None
 
 
-def _build_qa_pairs(context: dict[str, Any], question: str | None, report: str | None = None) -> dict[str, Any]:
+def _build_offline_answer(context: dict[str, Any], question: str, online_error: str | None = None) -> str:
+    best_model = context.get("best_model") or "iManformer"
+    rmse = context.get("best_rmse")
+    mae = context.get("best_mae")
+    reason = online_error or "在线接口暂不可用"
+    return (
+        f"当前未获取到 DeepSeek 在线回答（{reason}）。"
+        f"本地诊断显示 {best_model} 暂时是综合误差最低的模型，RMSE={rmse}，MAE={mae}。"
+        f"如果你要追问“{question[:120]}”，请先检查后端 DeepSeek 配置和网络连通性，恢复在线接口后即可返回真实 AI 回答。"
+    )
+
+
+def _build_qa_pairs(
+    context: dict[str, Any],
+    question: str | None,
+    report: str | None = None,
+    mode: str = "offline",
+    online_error: str | None = None,
+) -> dict[str, Any]:
     best_model = context.get("best_model") or "iManformer"
     if question:
-        answer = _extract_answer_from_report(report) or report or (
-            f"结合当前预测结果，{best_model} 是综合误差最低的模型。针对“{question[:120]}”，"
-            "建议优先检查对应时段的误差柱状图、风速突变、风向切换和原始样本缺失情况；"
-            "如果误差集中在爬坡或高风速区间，应增加异常天气标记，并对该区间单独复核 MAE/RMSE。"
+        answer = (
+            _extract_answer_from_report(report) or report
+            if mode == "online"
+            else _build_offline_answer(context, question, online_error)
         )
         return {
             "question": question,
             "answer": answer,
-            "references": ["模型评估指标", "误差分析", "气象上下文"],
+            "references": (
+                ["DeepSeek 在线回答", "模型评估指标", "误差分析", "气象上下文"]
+                if mode == "online"
+                else ["本地诊断", "模型评估指标", "误差分析"]
+            ),
         }
 
     return {
